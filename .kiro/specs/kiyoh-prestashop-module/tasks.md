@@ -31,7 +31,7 @@
   - **Property 10: Invitation errors are logged and retryable**
   - **Validates: Requirements 2.8**
 
-- [ ] 3. Create admin configuration interface
+- [x] 3. Create admin configuration interface
   - Build AdminKiyohController with configuration forms
   - Add fields for server selection, location ID, API key
   - Add order status trigger and delay settings

@@ -47,7 +47,8 @@ class Kiyoh extends Module
             $this->registerHook('actionOrderStatusUpdate') &&
             $this->registerHook('actionCronJob') &&
             $this->installDb() &&
-            $this->installConfiguration();
+            $this->installConfiguration() &&
+            $this->installAdminTab();
     }
 
     /**
@@ -59,7 +60,8 @@ class Kiyoh extends Module
         
         return parent::uninstall() &&
             $this->uninstallDb() &&
-            $this->uninstallConfiguration();
+            $this->uninstallConfiguration() &&
+            $this->uninstallAdminTab();
     }
 
     /**
@@ -280,6 +282,19 @@ class Kiyoh extends Module
      */
     public function getContent()
     {
+        // Redirect to the admin controller for full configuration interface
+        $adminUrl = $this->context->link->getAdminLink('AdminKiyoh');
+        Tools::redirectAdmin($adminUrl);
+        
+        // Fallback basic configuration if admin controller is not available
+        return $this->getBasicConfigurationForm();
+    }
+
+    /**
+     * Basic configuration form (fallback)
+     */
+    private function getBasicConfigurationForm()
+    {
         $output = null;
 
         // Handle form submission
@@ -458,5 +473,40 @@ class Kiyoh extends Module
         $helper->fields_value['KIYOH_API_KEY'] = Configuration::get('KIYOH_API_KEY');
 
         return $helper->generateForm($fields_form);
+    }
+
+    /**
+     * Install admin tab
+     */
+    private function installAdminTab()
+    {
+        $tab = new Tab();
+        $tab->active = 1;
+        $tab->class_name = 'AdminKiyoh';
+        $tab->name = array();
+        
+        foreach (Language::getLanguages(true) as $lang) {
+            $tab->name[$lang['id_lang']] = 'Kiyoh Reviews';
+        }
+        
+        $tab->id_parent = (int)Tab::getIdFromClassName('AdminParentModulesSf');
+        $tab->module = $this->name;
+        
+        return $tab->add();
+    }
+
+    /**
+     * Uninstall admin tab
+     */
+    private function uninstallAdminTab()
+    {
+        $id_tab = (int)Tab::getIdFromClassName('AdminKiyoh');
+        
+        if ($id_tab) {
+            $tab = new Tab($id_tab);
+            return $tab->delete();
+        }
+        
+        return true;
     }
 }
