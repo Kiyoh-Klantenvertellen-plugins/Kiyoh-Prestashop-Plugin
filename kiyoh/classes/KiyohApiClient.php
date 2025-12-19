@@ -139,7 +139,9 @@ class KiyohApiClient extends KiyohApi
     {
         $params = ['locationId' => $this->locationId];
         $queryString = http_build_query($params);
-        $url = $this->getBaseUrl() . '/v1/publication/product/review/external?' . $queryString;
+        
+        // Use statistics endpoint for connection testing - more reliable
+        $url = $this->getBaseUrl() . '/v1/publication/review/external/location/statistics?' . $queryString;
         
         try {
             $response = $this->makeRequest('GET', $url);
@@ -148,14 +150,20 @@ class KiyohApiClient extends KiyohApi
                 'success' => true,
                 'message' => 'Connection successful',
                 'platform' => $this->platform,
-                'location_id' => $this->locationId
+                'location_id' => $this->locationId,
+                'data' => $response
             ];
         } catch (Exception $e) {
-            $this->logError('testConnection', $e->getMessage(), $params);
+            // If statistics fails, the credentials are likely invalid
+            // But also check if it's just a 404 (endpoint might vary)
+            $errorMsg = $e->getMessage();
+            
+            // Log the error for debugging
+            $this->logError('testConnection', $errorMsg, $params);
             
             return [
                 'success' => false,
-                'message' => 'Connection failed: ' . $e->getMessage(),
+                'message' => 'Connection failed: ' . $errorMsg,
                 'platform' => $this->platform,
                 'location_id' => $this->locationId
             ];

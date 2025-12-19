@@ -11,8 +11,13 @@ if (!defined('_PS_VERSION_')) {
     exit;
 }
 
-require_once dirname(__FILE__) . '/../../classes/KiyohConfigManager.php';
-require_once dirname(__FILE__) . '/../../classes/KiyohApiClient.php';
+// Only require classes if they exist to prevent fatal errors during installation
+if (file_exists(dirname(__FILE__) . '/../../classes/KiyohConfigManager.php')) {
+    require_once dirname(__FILE__) . '/../../classes/KiyohConfigManager.php';
+}
+if (file_exists(dirname(__FILE__) . '/../../classes/KiyohApiClient.php')) {
+    require_once dirname(__FILE__) . '/../../classes/KiyohApiClient.php';
+}
 
 /**
  * Admin controller for Kiyoh module configuration
@@ -22,9 +27,7 @@ class AdminKiyohController extends ModuleAdminController
     public function __construct()
     {
         $this->bootstrap = true;
-        $this->table = 'kiyoh_config';
-        $this->className = 'KiyohConfig';
-        $this->lang = false;
+        $this->display = 'view';
         
         parent::__construct();
         
@@ -97,6 +100,14 @@ class AdminKiyohController extends ModuleAdminController
                 $this->ajaxDie(json_encode([
                     'success' => false,
                     'message' => $this->l('Please fill in all required fields')
+                ]));
+            }
+            
+            // Check if KiyohApiClient class exists
+            if (!class_exists('KiyohApiClient')) {
+                $this->ajaxDie(json_encode([
+                    'success' => false,
+                    'message' => $this->l('API client class not found. Please ensure all module files are properly installed.')
                 ]));
             }
             
@@ -276,10 +287,10 @@ class AdminKiyohController extends ModuleAdminController
         $helper = new HelperForm();
         
         // Form configuration
-        $helper->module = $this->module;
-        $helper->name_controller = $this->name;
+        $helper->module = Module::getInstanceByName('kiyoh');
+        $helper->name_controller = 'AdminKiyoh';
         $helper->token = Tools::getAdminTokenLite('AdminKiyoh');
-        $helper->currentIndex = AdminController::$currentIndex;
+        $helper->currentIndex = $this->context->link->getAdminLink('AdminKiyoh', false);
         $helper->default_form_language = $this->context->language->id;
         $helper->allow_employee_form_lang = $this->context->language->id;
         $helper->title = $this->l('Kiyoh Configuration');
@@ -560,9 +571,9 @@ class AdminKiyohController extends ModuleAdminController
     /**
      * Assign template variables
      */
-    public function setMedia()
+    public function setMedia($isNewTheme = false)
     {
-        parent::setMedia();
+        parent::setMedia($isNewTheme);
         
         // Add module-specific CSS and JS
         $this->addCSS(_MODULE_DIR_ . 'kiyoh/views/css/admin-config.css');

@@ -39,8 +39,6 @@ class Kiyoh extends Module
      */
     public function install()
     {
-        include(dirname(__FILE__) . '/sql/install.sql');
-        
         return parent::install() &&
             $this->registerHook('actionProductSave') &&
             $this->registerHook('actionProductAdd') &&
@@ -56,8 +54,6 @@ class Kiyoh extends Module
      */
     public function uninstall()
     {
-        include(dirname(__FILE__) . '/sql/uninstall.sql');
-        
         return parent::uninstall() &&
             $this->uninstallDb() &&
             $this->uninstallConfiguration() &&
@@ -76,7 +72,7 @@ class Kiyoh extends Module
             `id_sync` int(11) NOT NULL AUTO_INCREMENT,
             `id_product` int(11) NOT NULL,
             `last_sync` datetime DEFAULT NULL,
-            `sync_status` varchar(20) DEFAULT "pending",
+            `sync_status` varchar(20) DEFAULT \'pending\',
             `error_message` text,
             `date_add` datetime NOT NULL,
             `date_upd` datetime NOT NULL,
@@ -90,10 +86,10 @@ class Kiyoh extends Module
             `id_invitation` int(11) NOT NULL AUTO_INCREMENT,
             `id_order` int(11) NOT NULL,
             `customer_email` varchar(255) NOT NULL,
-            `invitation_type` varchar(20) DEFAULT "both",
+            `invitation_type` varchar(20) DEFAULT \'both\',
             `sent_at` datetime DEFAULT NULL,
             `delay_days` int(11) DEFAULT 0,
-            `status` varchar(20) DEFAULT "pending",
+            `status` varchar(20) DEFAULT \'pending\',
             `response_data` text,
             `date_add` datetime NOT NULL,
             PRIMARY KEY (`id_invitation`),
@@ -103,7 +99,27 @@ class Kiyoh extends Module
         ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8;';
 
         foreach ($sql as $query) {
-            if (Db::getInstance()->execute($query) == false) {
+            try {
+                if (Db::getInstance()->execute($query) == false) {
+                    PrestaShopLogger::addLog(
+                        'Kiyoh: Database installation failed for query: ' . $query,
+                        3,
+                        null,
+                        'Kiyoh',
+                        null,
+                        true
+                    );
+                    return false;
+                }
+            } catch (Exception $e) {
+                PrestaShopLogger::addLog(
+                    'Kiyoh: Database installation exception: ' . $e->getMessage(),
+                    3,
+                    null,
+                    'Kiyoh',
+                    null,
+                    true
+                );
                 return false;
             }
         }
@@ -282,11 +298,6 @@ class Kiyoh extends Module
      */
     public function getContent()
     {
-        // Redirect to the admin controller for full configuration interface
-        $adminUrl = $this->context->link->getAdminLink('AdminKiyoh');
-        Tools::redirectAdmin($adminUrl);
-        
-        // Fallback basic configuration if admin controller is not available
         return $this->getBasicConfigurationForm();
     }
 
@@ -329,7 +340,21 @@ class Kiyoh extends Module
     private function testApiConnection()
     {
         try {
+            // Check if API client class file exists
+            if (!file_exists(dirname(__FILE__) . '/classes/KiyohApiClient.php')) {
+                return $this->displayError(
+                    $this->l('API client class file not found. Please ensure all module files are properly installed.')
+                );
+            }
+            
             require_once dirname(__FILE__) . '/classes/KiyohApiClient.php';
+            
+            // Check if class exists after include
+            if (!class_exists('KiyohApiClient')) {
+                return $this->displayError(
+                    $this->l('API client class could not be loaded.')
+                );
+            }
             
             $apiClient = KiyohApiClient::createFromConfig();
             $result = $apiClient->testConnection();
@@ -489,7 +514,16 @@ class Kiyoh extends Module
             $tab->name[$lang['id_lang']] = 'Kiyoh Reviews';
         }
         
-        $tab->id_parent = (int)Tab::getIdFromClassName('AdminParentModulesSf');
+        // Try different parent tab options for compatibility
+        $parentId = (int)Tab::getIdFromClassName('AdminParentModulesSf');
+        if (!$parentId) {
+            $parentId = (int)Tab::getIdFromClassName('AdminParentModules');
+        }
+        if (!$parentId) {
+            $parentId = (int)Tab::getIdFromClassName('AdminModules');
+        }
+        
+        $tab->id_parent = $parentId;
         $tab->module = $this->name;
         
         return $tab->add();
