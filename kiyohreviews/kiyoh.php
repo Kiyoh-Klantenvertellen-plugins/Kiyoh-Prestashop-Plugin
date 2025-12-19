@@ -282,6 +282,7 @@ class Kiyoh extends Module
     {
         $output = null;
 
+        // Handle form submission
         if (Tools::isSubmit('submit' . $this->name)) {
             $kiyoh_enabled = strval(Tools::getValue('KIYOH_ENABLED'));
             $kiyoh_platform = strval(Tools::getValue('KIYOH_PLATFORM'));
@@ -299,7 +300,40 @@ class Kiyoh extends Module
             }
         }
 
+        // Handle API connection test
+        if (Tools::isSubmit('test_connection')) {
+            $output .= $this->testApiConnection();
+        }
+
         return $output . $this->displayForm();
+    }
+
+    /**
+     * Test API connection
+     */
+    private function testApiConnection()
+    {
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohApiClient.php';
+            
+            $apiClient = KiyohApiClient::createFromConfig();
+            $result = $apiClient->testConnection();
+            
+            if ($result['success']) {
+                return $this->displayConfirmation(
+                    $this->l('API connection successful!') . ' (' . 
+                    $result['platform'] . ' - ' . $result['location_id'] . ')'
+                );
+            } else {
+                return $this->displayError(
+                    $this->l('API connection failed: ') . $result['message']
+                );
+            }
+        } catch (Exception $e) {
+            return $this->displayError(
+                $this->l('API connection test failed: ') . $e->getMessage()
+            );
+        }
     }
 
     /**
@@ -375,6 +409,15 @@ class Kiyoh extends Module
             'submit' => array(
                 'title' => $this->l('Save'),
                 'class' => 'btn btn-default pull-right'
+            ),
+            'buttons' => array(
+                array(
+                    'title' => $this->l('Test Connection'),
+                    'name' => 'test_connection',
+                    'type' => 'submit',
+                    'class' => 'btn btn-info',
+                    'icon' => 'process-icon-cogs'
+                )
             )
         );
 

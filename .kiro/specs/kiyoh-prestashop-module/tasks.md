@@ -11,7 +11,7 @@
   - **Property 13: Graceful degradation on missing dependencies**
   - **Validates: Requirements 5.7**
 
-- [ ] 2. Build API client and abstraction layer
+- [x] 2. Build API client and abstraction layer
   - Create KiyohApi class that handles both Kiyoh.com and Klantenvertellen.nl
   - Implement KiyohApiClient with HTTP request handling using PrestaShop's HTTP client
   - Implement product sync method (PUT request with product data)
