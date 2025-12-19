@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Create basic module structure
+- [x] 1. Create basic module structure
   - Create main module file (kiyoh.php) with PrestaShop headers and install/uninstall methods
   - Set up basic folder structure (classes/, controllers/, views/, sql/)
   - Create module configuration schema and database tables
