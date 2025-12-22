@@ -39,14 +39,16 @@ class Kiyoh extends Module
      */
     public function install()
     {
+        // Remove any existing broken admin tab first
+        $this->uninstallAdminTab();
+        
         return parent::install() &&
             $this->registerHook('actionProductSave') &&
             $this->registerHook('actionProductAdd') &&
             $this->registerHook('actionOrderStatusUpdate') &&
             $this->registerHook('actionCronJob') &&
             $this->installDb() &&
-            $this->installConfiguration() &&
-            $this->installAdminTab();
+            $this->installConfiguration();
     }
 
     /**
@@ -302,7 +304,7 @@ class Kiyoh extends Module
     }
 
     /**
-     * Basic configuration form (fallback)
+     * Configuration form handler
      */
     private function getBasicConfigurationForm()
     {
@@ -310,20 +312,7 @@ class Kiyoh extends Module
 
         // Handle form submission
         if (Tools::isSubmit('submit' . $this->name)) {
-            $kiyoh_enabled = strval(Tools::getValue('KIYOH_ENABLED'));
-            $kiyoh_platform = strval(Tools::getValue('KIYOH_PLATFORM'));
-            $kiyoh_location_id = strval(Tools::getValue('KIYOH_LOCATION_ID'));
-            $kiyoh_api_key = strval(Tools::getValue('KIYOH_API_KEY'));
-
-            if (!$kiyoh_location_id || empty($kiyoh_location_id) || !Validate::isGenericName($kiyoh_location_id)) {
-                $output .= $this->displayError($this->l('Invalid Location ID value'));
-            } else {
-                Configuration::updateValue('KIYOH_ENABLED', $kiyoh_enabled);
-                Configuration::updateValue('KIYOH_PLATFORM', $kiyoh_platform);
-                Configuration::updateValue('KIYOH_LOCATION_ID', $kiyoh_location_id);
-                Configuration::updateValue('KIYOH_API_KEY', $kiyoh_api_key);
-                $output .= $this->displayConfirmation($this->l('Settings updated'));
-            }
+            $output .= $this->processConfigurationForm();
         }
 
         // Handle API connection test
@@ -332,6 +321,63 @@ class Kiyoh extends Module
         }
 
         return $output . $this->displayForm();
+    }
+
+    /**
+     * Process configuration form submission
+     */
+    private function processConfigurationForm()
+    {
+        $errors = array();
+
+        // General settings
+        $kiyoh_location_id = strval(Tools::getValue('KIYOH_LOCATION_ID'));
+        $kiyoh_api_key = strval(Tools::getValue('KIYOH_API_KEY'));
+
+        if (empty($kiyoh_location_id)) {
+            $errors[] = $this->l('Location ID is required');
+        }
+        if (empty($kiyoh_api_key)) {
+            $errors[] = $this->l('API Key is required');
+        }
+
+        // Validate delay days
+        $delay_days = (int)Tools::getValue('KIYOH_DELAY_DAYS');
+        if ($delay_days < 0) {
+            $errors[] = $this->l('Delay days must be 0 or greater');
+        }
+
+        // Validate max products
+        $max_products = (int)Tools::getValue('KIYOH_MAX_PRODUCTS');
+        if ($max_products < 1 || $max_products > 10) {
+            $errors[] = $this->l('Max products must be between 1 and 10');
+        }
+
+        if (!empty($errors)) {
+            return $this->displayError(implode('<br>', $errors));
+        }
+
+        // Save all configuration values
+        $triggerStatus = Tools::getValue('KIYOH_TRIGGER_STATUS');
+        $excludedGroups = Tools::getValue('KIYOH_EXCLUDED_GROUPS');
+
+        Configuration::updateValue('KIYOH_ENABLED', (int)Tools::getValue('KIYOH_ENABLED'));
+        Configuration::updateValue('KIYOH_PLATFORM', strval(Tools::getValue('KIYOH_PLATFORM')));
+        Configuration::updateValue('KIYOH_LOCATION_ID', $kiyoh_location_id);
+        Configuration::updateValue('KIYOH_API_KEY', $kiyoh_api_key);
+        Configuration::updateValue('KIYOH_AUTO_SYNC', (int)Tools::getValue('KIYOH_AUTO_SYNC'));
+        Configuration::updateValue('KIYOH_EXCLUDED_TYPES', strval(Tools::getValue('KIYOH_EXCLUDED_TYPES')));
+        Configuration::updateValue('KIYOH_EXCLUDED_CODES', strval(Tools::getValue('KIYOH_EXCLUDED_CODES')));
+        Configuration::updateValue('KIYOH_TRIGGER_STATUS', is_array($triggerStatus) ? implode(',', $triggerStatus) : '');
+        Configuration::updateValue('KIYOH_DELAY_DAYS', $delay_days);
+        Configuration::updateValue('KIYOH_INVITATION_TYPE', strval(Tools::getValue('KIYOH_INVITATION_TYPE')));
+        Configuration::updateValue('KIYOH_MAX_PRODUCTS', $max_products);
+        Configuration::updateValue('KIYOH_PRODUCT_SORT_ORDER', strval(Tools::getValue('KIYOH_PRODUCT_SORT_ORDER')));
+        Configuration::updateValue('KIYOH_EXCLUDED_GROUPS', is_array($excludedGroups) ? implode(',', $excludedGroups) : '');
+        Configuration::updateValue('KIYOH_LANGUAGE_AUTO', (int)Tools::getValue('KIYOH_LANGUAGE_AUTO'));
+        Configuration::updateValue('KIYOH_FALLBACK_LANGUAGE', strval(Tools::getValue('KIYOH_FALLBACK_LANGUAGE')));
+
+        return $this->displayConfirmation($this->l('Settings updated'));
     }
 
     /**
@@ -381,32 +427,29 @@ class Kiyoh extends Module
      */
     public function displayForm()
     {
-        // Get default language
         $default_lang = (int)Configuration::get('PS_LANG_DEFAULT');
+        $orderStatuses = OrderState::getOrderStates($this->context->language->id);
+        $customerGroups = Group::getGroups($this->context->language->id);
+        $languages = Language::getLanguages(true);
 
-        // Init Fields form array
+        $fields_form = array();
+
+        // General Settings
         $fields_form[0]['form'] = array(
             'legend' => array(
-                'title' => $this->l('Settings'),
+                'title' => $this->l('General Settings'),
+                'icon' => 'icon-cogs'
             ),
             'input' => array(
                 array(
                     'type' => 'switch',
-                    'label' => $this->l('Enable Kiyoh'),
+                    'label' => $this->l('Enable Module'),
                     'name' => 'KIYOH_ENABLED',
                     'is_bool' => true,
                     'desc' => $this->l('Enable or disable the Kiyoh module'),
                     'values' => array(
-                        array(
-                            'id' => 'active_on',
-                            'value' => true,
-                            'label' => $this->l('Enabled')
-                        ),
-                        array(
-                            'id' => 'active_off',
-                            'value' => false,
-                            'label' => $this->l('Disabled')
-                        )
+                        array('id' => 'active_on', 'value' => 1, 'label' => $this->l('Enabled')),
+                        array('id' => 'active_off', 'value' => 0, 'label' => $this->l('Disabled'))
                     ),
                 ),
                 array(
@@ -416,14 +459,8 @@ class Kiyoh extends Module
                     'desc' => $this->l('Select the review platform to use'),
                     'options' => array(
                         'query' => array(
-                            array(
-                                'id_option' => 'kiyoh',
-                                'name' => 'Kiyoh.com'
-                            ),
-                            array(
-                                'id_option' => 'klantenvertellen',
-                                'name' => 'Klantenvertellen.nl'
-                            )
+                            array('id_option' => 'kiyoh', 'name' => 'Kiyoh.com'),
+                            array('id_option' => 'klantenvertellen', 'name' => 'Klantenvertellen.nl')
                         ),
                         'id' => 'id_option',
                         'name' => 'name'
@@ -443,12 +480,8 @@ class Kiyoh extends Module
                     'name' => 'KIYOH_API_KEY',
                     'size' => 50,
                     'required' => true,
-                    'desc' => $this->l('Your Kiyoh/Klantenvertellen API Key'),
+                    'desc' => $this->l('Your Kiyoh/Klantenvertellen API Key (X-Publication-Api-Token)'),
                 ),
-            ),
-            'submit' => array(
-                'title' => $this->l('Save'),
-                'class' => 'btn btn-default pull-right'
             ),
             'buttons' => array(
                 array(
@@ -461,72 +494,213 @@ class Kiyoh extends Module
             )
         );
 
-        $helper = new HelperForm();
+        // Product Sync Settings
+        $fields_form[1]['form'] = array(
+            'legend' => array(
+                'title' => $this->l('Product Sync Settings'),
+                'icon' => 'icon-refresh'
+            ),
+            'input' => array(
+                array(
+                    'type' => 'switch',
+                    'label' => $this->l('Auto Sync Products'),
+                    'name' => 'KIYOH_AUTO_SYNC',
+                    'is_bool' => true,
+                    'desc' => $this->l('Automatically sync products when they are created or updated'),
+                    'values' => array(
+                        array('id' => 'sync_on', 'value' => 1, 'label' => $this->l('Enabled')),
+                        array('id' => 'sync_off', 'value' => 0, 'label' => $this->l('Disabled'))
+                    ),
+                ),
+                array(
+                    'type' => 'textarea',
+                    'label' => $this->l('Excluded Product Types'),
+                    'name' => 'KIYOH_EXCLUDED_TYPES',
+                    'desc' => $this->l('Comma-separated list of product types to exclude (e.g., virtual, pack)'),
+                    'rows' => 2,
+                ),
+                array(
+                    'type' => 'textarea',
+                    'label' => $this->l('Excluded Product Codes'),
+                    'name' => 'KIYOH_EXCLUDED_CODES',
+                    'desc' => $this->l('Comma-separated list of product references/SKUs to exclude'),
+                    'rows' => 2,
+                ),
+            ),
+        );
 
-        // Module, token and currentIndex
+        // Review Invitation Settings
+        $fields_form[2]['form'] = array(
+            'legend' => array(
+                'title' => $this->l('Review Invitation Settings'),
+                'icon' => 'icon-envelope'
+            ),
+            'input' => array(
+                array(
+                    'type' => 'select',
+                    'label' => $this->l('Trigger Order Status'),
+                    'name' => 'KIYOH_TRIGGER_STATUS[]',
+                    'multiple' => true,
+                    'desc' => $this->l('Select order statuses that trigger review invitations (hold Ctrl to select multiple)'),
+                    'options' => array(
+                        'query' => $orderStatuses,
+                        'id' => 'id_order_state',
+                        'name' => 'name'
+                    ),
+                ),
+                array(
+                    'type' => 'text',
+                    'label' => $this->l('Invitation Delay (days)'),
+                    'name' => 'KIYOH_DELAY_DAYS',
+                    'size' => 5,
+                    'desc' => $this->l('Days to wait before sending invitation (0 = immediate)'),
+                ),
+                array(
+                    'type' => 'select',
+                    'label' => $this->l('Invitation Type'),
+                    'name' => 'KIYOH_INVITATION_TYPE',
+                    'desc' => $this->l('Type of review invitation to send'),
+                    'options' => array(
+                        'query' => array(
+                            array('id_option' => 'both', 'name' => $this->l('Shop + Product Reviews')),
+                            array('id_option' => 'product', 'name' => $this->l('Product Reviews Only'))
+                        ),
+                        'id' => 'id_option',
+                        'name' => 'name'
+                    ),
+                ),
+                array(
+                    'type' => 'text',
+                    'label' => $this->l('Max Products per Invitation'),
+                    'name' => 'KIYOH_MAX_PRODUCTS',
+                    'size' => 5,
+                    'desc' => $this->l('Maximum products to include (1-10, recommended: 3-4)'),
+                ),
+                array(
+                    'type' => 'select',
+                    'label' => $this->l('Product Sort Order'),
+                    'name' => 'KIYOH_PRODUCT_SORT_ORDER',
+                    'desc' => $this->l('How to sort products when limiting the number'),
+                    'options' => array(
+                        'query' => array(
+                            array('id_option' => 'price_desc', 'name' => $this->l('Price (High to Low)')),
+                            array('id_option' => 'price_asc', 'name' => $this->l('Price (Low to High)')),
+                            array('id_option' => 'name_asc', 'name' => $this->l('Name (A-Z)')),
+                            array('id_option' => 'name_desc', 'name' => $this->l('Name (Z-A)')),
+                            array('id_option' => 'random', 'name' => $this->l('Random'))
+                        ),
+                        'id' => 'id_option',
+                        'name' => 'name'
+                    ),
+                ),
+                array(
+                    'type' => 'select',
+                    'label' => $this->l('Excluded Customer Groups'),
+                    'name' => 'KIYOH_EXCLUDED_GROUPS[]',
+                    'multiple' => true,
+                    'desc' => $this->l('Customer groups that should NOT receive invitations (hold Ctrl to select multiple)'),
+                    'options' => array(
+                        'query' => $customerGroups,
+                        'id' => 'id_group',
+                        'name' => 'name'
+                    ),
+                ),
+            ),
+        );
+
+        // Language Settings
+        $languageOptions = array();
+        foreach ($languages as $lang) {
+            $languageOptions[] = array('id_option' => $lang['iso_code'], 'name' => $lang['name']);
+        }
+
+        $fields_form[3]['form'] = array(
+            'legend' => array(
+                'title' => $this->l('Language Settings'),
+                'icon' => 'icon-globe'
+            ),
+            'input' => array(
+                array(
+                    'type' => 'switch',
+                    'label' => $this->l('Auto-detect Language'),
+                    'name' => 'KIYOH_LANGUAGE_AUTO',
+                    'is_bool' => true,
+                    'desc' => $this->l('Automatically detect customer language from their profile'),
+                    'values' => array(
+                        array('id' => 'lang_on', 'value' => 1, 'label' => $this->l('Enabled')),
+                        array('id' => 'lang_off', 'value' => 0, 'label' => $this->l('Disabled'))
+                    ),
+                ),
+                array(
+                    'type' => 'select',
+                    'label' => $this->l('Fallback Language'),
+                    'name' => 'KIYOH_FALLBACK_LANGUAGE',
+                    'desc' => $this->l('Default language when auto-detection fails'),
+                    'options' => array(
+                        'query' => $languageOptions,
+                        'id' => 'id_option',
+                        'name' => 'name'
+                    ),
+                ),
+            ),
+            'submit' => array(
+                'title' => $this->l('Save'),
+                'class' => 'btn btn-default pull-right'
+            )
+        );
+
+        $helper = new HelperForm();
         $helper->module = $this;
         $helper->name_controller = $this->name;
         $helper->token = Tools::getAdminTokenLite('AdminModules');
         $helper->currentIndex = AdminController::$currentIndex . '&configure=' . $this->name;
-
-        // Language
         $helper->default_form_language = $default_lang;
         $helper->allow_employee_form_lang = $default_lang;
-
-        // Title and toolbar
         $helper->title = $this->displayName;
-        $helper->show_toolbar = true;        // false -> remove toolbar
-        $helper->toolbar_scroll = true;      // yes - > Toolbar is always visible on the top of the screen.
+        $helper->show_toolbar = true;
+        $helper->toolbar_scroll = true;
         $helper->submit_action = 'submit' . $this->name;
         $helper->toolbar_btn = array(
-            'save' =>
-                array(
-                    'desc' => $this->l('Save'),
-                    'href' => AdminController::$currentIndex . '&configure=' . $this->name . '&save' . $this->name .
-                        '&token=' . Tools::getAdminTokenLite('AdminModules'),
-                ),
+            'save' => array(
+                'desc' => $this->l('Save'),
+                'href' => AdminController::$currentIndex . '&configure=' . $this->name . '&save' . $this->name . '&token=' . Tools::getAdminTokenLite('AdminModules'),
+            ),
             'back' => array(
                 'href' => AdminController::$currentIndex . '&token=' . Tools::getAdminTokenLite('AdminModules'),
                 'desc' => $this->l('Back to list')
             )
         );
 
-        // Load current value
+        // Load current values
+        $triggerStatus = Configuration::get('KIYOH_TRIGGER_STATUS');
+        $excludedGroups = Configuration::get('KIYOH_EXCLUDED_GROUPS');
+
         $helper->fields_value['KIYOH_ENABLED'] = Configuration::get('KIYOH_ENABLED');
         $helper->fields_value['KIYOH_PLATFORM'] = Configuration::get('KIYOH_PLATFORM');
         $helper->fields_value['KIYOH_LOCATION_ID'] = Configuration::get('KIYOH_LOCATION_ID');
         $helper->fields_value['KIYOH_API_KEY'] = Configuration::get('KIYOH_API_KEY');
+        $helper->fields_value['KIYOH_AUTO_SYNC'] = Configuration::get('KIYOH_AUTO_SYNC');
+        $helper->fields_value['KIYOH_EXCLUDED_TYPES'] = Configuration::get('KIYOH_EXCLUDED_TYPES');
+        $helper->fields_value['KIYOH_EXCLUDED_CODES'] = Configuration::get('KIYOH_EXCLUDED_CODES');
+        $helper->fields_value['KIYOH_TRIGGER_STATUS[]'] = !empty($triggerStatus) ? explode(',', $triggerStatus) : array();
+        $helper->fields_value['KIYOH_DELAY_DAYS'] = Configuration::get('KIYOH_DELAY_DAYS');
+        $helper->fields_value['KIYOH_INVITATION_TYPE'] = Configuration::get('KIYOH_INVITATION_TYPE');
+        $helper->fields_value['KIYOH_MAX_PRODUCTS'] = Configuration::get('KIYOH_MAX_PRODUCTS');
+        $helper->fields_value['KIYOH_PRODUCT_SORT_ORDER'] = Configuration::get('KIYOH_PRODUCT_SORT_ORDER');
+        $helper->fields_value['KIYOH_EXCLUDED_GROUPS[]'] = !empty($excludedGroups) ? explode(',', $excludedGroups) : array();
+        $helper->fields_value['KIYOH_LANGUAGE_AUTO'] = Configuration::get('KIYOH_LANGUAGE_AUTO');
+        $helper->fields_value['KIYOH_FALLBACK_LANGUAGE'] = Configuration::get('KIYOH_FALLBACK_LANGUAGE');
 
         return $helper->generateForm($fields_form);
     }
 
     /**
-     * Install admin tab
+     * Install admin tab - disabled, using module configure instead
      */
     private function installAdminTab()
     {
-        $tab = new Tab();
-        $tab->active = 1;
-        $tab->class_name = 'AdminKiyoh';
-        $tab->name = array();
-        
-        foreach (Language::getLanguages(true) as $lang) {
-            $tab->name[$lang['id_lang']] = 'Kiyoh Reviews';
-        }
-        
-        // Try different parent tab options for compatibility
-        $parentId = (int)Tab::getIdFromClassName('AdminParentModulesSf');
-        if (!$parentId) {
-            $parentId = (int)Tab::getIdFromClassName('AdminParentModules');
-        }
-        if (!$parentId) {
-            $parentId = (int)Tab::getIdFromClassName('AdminModules');
-        }
-        
-        $tab->id_parent = $parentId;
-        $tab->module = $this->name;
-        
-        return $tab->add();
+        // Not installing admin tab - configuration is handled via module configure page
+        return true;
     }
 
     /**
