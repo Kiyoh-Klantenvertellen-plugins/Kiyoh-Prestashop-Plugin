@@ -164,7 +164,7 @@ class Kiyoh extends Module
             'KIYOH_DELAY_DAYS' => '7',
             'KIYOH_INVITATION_TYPE' => 'both',
             'KIYOH_MAX_PRODUCTS' => '5',
-            'KIYOH_PRODUCT_SORT_ORDER' => 'price_desc',
+            'KIYOH_PRODUCT_SORT_ORDER' => 'cart_order',
             'KIYOH_EXCLUDED_GROUPS' => '',
             'KIYOH_LANGUAGE_AUTO' => true,
             'KIYOH_FALLBACK_LANGUAGE' => 'en',
@@ -282,16 +282,21 @@ class Kiyoh extends Module
             return;
         }
 
-        // Invitation logic will be implemented in task 5
-        // For now, just log that the hook was triggered
-        PrestaShopLogger::addLog(
-            'Kiyoh: Order status update hook triggered for order ID: ' . $params['id_order'],
-            1,
-            null,
-            'Kiyoh',
-            null,
-            true
-        );
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohInvitationManager.php';
+            
+            $invitationManager = new KiyohInvitationManager();
+            $invitationManager->handleOrderStatusUpdate($params);
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                'Kiyoh: Order status update hook error: ' . $e->getMessage(),
+                3,
+                null,
+                'Kiyoh',
+                null,
+                true
+            );
+        }
     }
 
     /**
@@ -667,7 +672,8 @@ class Kiyoh extends Module
                     'options' => array(
                         'query' => array(
                             array('id_option' => 'both', 'name' => $this->l('Shop + Product Reviews')),
-                            array('id_option' => 'product', 'name' => $this->l('Product Reviews Only'))
+                            array('id_option' => 'product', 'name' => $this->l('Product Reviews Only')),
+                            array('id_option' => 'shop', 'name' => $this->l('Shop Reviews Only'))
                         ),
                         'id' => 'id_option',
                         'name' => 'name'
@@ -687,11 +693,13 @@ class Kiyoh extends Module
                     'desc' => $this->l('How to sort products when limiting the number'),
                     'options' => array(
                         'query' => array(
+                            array('id_option' => 'cart_order', 'name' => $this->l('Cart Order (Default)')),
                             array('id_option' => 'price_desc', 'name' => $this->l('Price (High to Low)')),
                             array('id_option' => 'price_asc', 'name' => $this->l('Price (Low to High)')),
-                            array('id_option' => 'name_asc', 'name' => $this->l('Name (A-Z)')),
-                            array('id_option' => 'name_desc', 'name' => $this->l('Name (Z-A)')),
-                            array('id_option' => 'random', 'name' => $this->l('Random'))
+                            array('id_option' => 'name_asc', 'name' => $this->l('Name (A to Z)')),
+                            array('id_option' => 'name_desc', 'name' => $this->l('Name (Z to A)')),
+                            array('id_option' => 'sku_asc', 'name' => $this->l('SKU (A to Z)')),
+                            array('id_option' => 'sku_desc', 'name' => $this->l('SKU (Z to A)'))
                         ),
                         'id' => 'id_option',
                         'name' => 'name'

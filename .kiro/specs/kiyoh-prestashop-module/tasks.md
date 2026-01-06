@@ -70,7 +70,7 @@
   - **Property 4: Product sync includes required fields**
   - **Validates: Requirements 1.7**
 
-- [ ] 5. Build invitation system
+- [x] 5. Build invitation system
   - Create KiyohInvitationManager class
   - Hook into PrestaShop order status change actions (actionOrderStatusUpdate)
   - Extract customer and order data when status changes

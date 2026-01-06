@@ -34,6 +34,9 @@ class KiyohInvitationData
     /** @var string Language code */
     public $language;
     
+    /** @var string Invitation type */
+    public $invitationType;
+    
     /** @var bool Product invite only */
     public $productInvite;
 
@@ -55,7 +58,8 @@ class KiyohInvitationData
         // Basic invitation data
         $invitationData->delay = (int)($config['delay_days'] ?? 7);
         $invitationData->email = $customer->email;
-        $invitationData->productInvite = ($config['invitation_type'] ?? 'both') === 'product_only';
+        $invitationData->invitationType = $config['invitation_type'] ?? 'both';
+        $invitationData->productInvite = $invitationData->invitationType === 'product';
         
         // Customer name
         $firstName = $customer->firstname ?? '';
@@ -69,7 +73,13 @@ class KiyohInvitationData
         $invitationData->language = self::detectLanguage($order, $config);
         
         // Product codes from order
-        $invitationData->productCodes = self::extractProductCodes($order, $config);
+        if ($invitationData->invitationType === 'shop') {
+            // Shop only - no product codes
+            $invitationData->productCodes = [];
+        } else {
+            // Both or product only - include product codes
+            $invitationData->productCodes = self::extractProductCodes($order, $config);
+        }
         
         return $invitationData;
     }
@@ -84,9 +94,13 @@ class KiyohInvitationData
         $data = [
             'invite_email' => $this->email,
             'delay' => $this->delay,
-            'language' => $this->language,
-            'product_code' => $this->productCodes
+            'language' => $this->language
         ];
+        
+        // Add product codes only if not shop-only invitation
+        if ($this->invitationType !== 'shop' && !empty($this->productCodes)) {
+            $data['product_code'] = $this->productCodes;
+        }
         
         // Add optional fields if they have values
         if (!empty($this->customerName)) {
@@ -101,6 +115,7 @@ class KiyohInvitationData
             $data['city'] = $this->city;
         }
         
+        // Set product_invite flag based on invitation type
         if ($this->productInvite) {
             $data['product_invite'] = true;
         }
@@ -131,8 +146,10 @@ class KiyohInvitationData
             $errors[] = 'Language is required';
         }
         
-        if (empty($this->productCodes)) {
-            $errors[] = 'At least one product code is required';
+        if ($this->invitationType === 'shop') {
+            // Shop only invitations don't need product codes
+        } elseif (empty($this->productCodes)) {
+            $errors[] = 'At least one product code is required for product or both invitation types';
         }
         
         return $errors;
@@ -147,11 +164,37 @@ class KiyohInvitationData
      */
     private static function detectLanguage(Order $order, array $config): string
     {
+        // If auto-detection is disabled, use fallback
+        if (!($config['language_auto'] ?? true)) {
+            return $config['fallback_language'] ?? 'en';
+        }
+        
         // Try to get language from order
         if ($order->id_lang) {
             $language = new Language($order->id_lang);
             if ($language->iso_code) {
                 return strtolower($language->iso_code);
+            }
+        }
+        
+        // Try to get language from customer
+        $customer = new Customer($order->id_customer);
+        if (Validate::isLoadedObject($customer) && $customer->id_lang) {
+            $language = new Language($customer->id_lang);
+            if ($language->iso_code) {
+                return strtolower($language->iso_code);
+            }
+        }
+        
+        // Try to get language from delivery address country
+        $address = new Address($order->id_address_delivery);
+        if (Validate::isLoadedObject($address) && $address->id_country) {
+            $country = new Country($address->id_country);
+            if (Validate::isLoadedObject($country) && $country->id_lang) {
+                $language = new Language($country->id_lang);
+                if ($language->iso_code) {
+                    return strtolower($language->iso_code);
+                }
             }
         }
         
@@ -179,24 +222,104 @@ class KiyohInvitationData
     {
         $productCodes = [];
         $maxProducts = (int)($config['max_products'] ?? 5);
+        $sortOrder = $config['product_sort_order'] ?? 'cart_order';
         
-        // Get order details
+        // Get order details with product information
         $orderDetails = $order->getOrderDetailList();
         
+        if (empty($orderDetails)) {
+            return [];
+        }
+        
+        // Build product data for sorting
+        $products = [];
         foreach ($orderDetails as $detail) {
-            if (count($productCodes) >= $maxProducts) {
-                break;
+            $product = new Product($detail['product_id']);
+            if (!Validate::isLoadedObject($product)) {
+                continue;
             }
             
-            // Get product reference or use product ID
-            $product = new Product($detail['product_id']);
             $productCode = $product->reference ?: $detail['product_id'];
             
-            if (!in_array($productCode, $productCodes)) {
-                $productCodes[] = $productCode;
+            // Skip if already included
+            if (isset($products[$productCode])) {
+                continue;
             }
+            
+            $products[$productCode] = [
+                'code' => $productCode,
+                'name' => $product->name[Context::getContext()->language->id] ?? '',
+                'price' => (float)$detail['unit_price_tax_incl'],
+                'product_id' => $detail['product_id']
+            ];
+        }
+        
+        // Sort products based on configuration
+        self::sortProducts($products, $sortOrder);
+        
+        // Extract codes up to max limit
+        $count = 0;
+        foreach ($products as $product) {
+            if ($count >= $maxProducts) {
+                break;
+            }
+            $productCodes[] = $product['code'];
+            $count++;
         }
         
         return $productCodes;
+    }
+    
+    /**
+     * Sort products based on configuration
+     *
+     * @param array &$products Products array (passed by reference)
+     * @param string $sortOrder Sort order configuration
+     * @return void
+     */
+    private static function sortProducts(array &$products, string $sortOrder): void
+    {
+        switch ($sortOrder) {
+            case 'price_desc':
+                uasort($products, function($a, $b) {
+                    return $b['price'] <=> $a['price'];
+                });
+                break;
+                
+            case 'price_asc':
+                uasort($products, function($a, $b) {
+                    return $a['price'] <=> $b['price'];
+                });
+                break;
+                
+            case 'name_asc':
+                uasort($products, function($a, $b) {
+                    return strcasecmp($a['name'], $b['name']);
+                });
+                break;
+                
+            case 'name_desc':
+                uasort($products, function($a, $b) {
+                    return strcasecmp($b['name'], $a['name']);
+                });
+                break;
+                
+            case 'sku_asc':
+                uasort($products, function($a, $b) {
+                    return strcasecmp($a['code'], $b['code']);
+                });
+                break;
+                
+            case 'sku_desc':
+                uasort($products, function($a, $b) {
+                    return strcasecmp($b['code'], $a['code']);
+                });
+                break;
+                
+            case 'cart_order':
+            default:
+                // Keep original cart order - no sorting needed
+                break;
+        }
     }
 }
