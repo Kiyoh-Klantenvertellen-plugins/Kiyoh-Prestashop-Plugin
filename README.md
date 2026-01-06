@@ -242,7 +242,7 @@ Enable PrestaShop debug mode to see detailed information about module operations
 **Version**: 1.0.0  
 **Compatibility**: PrestaShop 1.7+  
 **Developer**: Kiyoh  
-**License**: Academic Free License 3.0 (AFL-3.0)  
+**License**: Proprietary 
 **Last Updated**: January 2025  
 
 ## Support
