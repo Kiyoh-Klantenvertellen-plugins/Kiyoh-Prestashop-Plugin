@@ -46,7 +46,7 @@ The module is compatible with:
 
 Navigate to your Kiyoh/Klantenvertellen dashboard to receive:
 - Your Location ID
-- Your API Key (X-Publication-Api-Token)
+- Your API Key
 
 Keep these credentials handy for the next step.
 
@@ -83,7 +83,7 @@ In the **General Settings** section:
 - **Enable Module**: Set to **Yes**
 - **Platform**: Select your platform (Kiyoh.com or Klantenvertellen.nl)
 - **Location ID**: Enter your Location ID
-- **API Key**: Enter your API Key (X-Publication-Api-Token)
+- **API Key**: Enter your API Key
 - Click **Save**
 
 #### Test Your Connection
@@ -93,7 +93,7 @@ After entering credentials:
 - Wait for the success message
 - If you see an error, double-check your credentials
 
-The system will automatically verify your credentials and show your platform and location ID if successful.
+The system will automatically verify your credentials if successful.
 
 #### Configure Product Synchronization
 
@@ -101,19 +101,17 @@ In the **Product Sync Settings** section:
 - **Auto Sync Products**: Set to **Yes** (recommended)
   - This automatically updates product information when you edit products
 - **Excluded Product Types**: Select product types you don't want to sync (optional)
-  - Examples: Virtual products, pack products, downloadable products
-  - Products without images or descriptions
-  - Out of stock or disabled products
-- **Excluded Product Codes**: Enter specific product references/SKUs to exclude (optional)
-  - Enter comma-separated values
-  - Example: SAMPLE-001, TEST-SKU, DEMO-PRODUCT
+  - Example: Virtual products, downloadable products, gift cards
+- **Excluded Product Codes**: Enter specific SKUs to exclude (optional)
+  - Enter one SKU per line or seperated by commas
+  - Example: SAMPLE-001, TEST-SKU
 
 **Initial Product Sync:**
 - **Important**: First save your API credentials, then proceed with bulk sync
-- Click the **Bulk Sync All Products** button to sync all existing products
+- Click the **Bulk Sync Products** button to sync all existing products
 - **Do not leave the page while the sync is in progress**
 - This may take several minutes depending on your catalog size
-- You'll see a success/error message when complete
+- You'll see a loading indicator during the sync
 - You only need to do this once
 
 Click **Save** when done.
@@ -123,19 +121,15 @@ Click **Save** when done.
 In the **Review Invitation Settings** section:
 
 **Basic Settings:**
-- **Trigger Order Status**: Select when to send invitations (usually "Delivered" or "Payment accepted")
-  - Hold Ctrl to select multiple statuses
-  - Common choices: "Payment accepted", "Shipped", "Delivered"
-- **Invitation Delay (days)**: How many days to wait before sending
-  - 0 = send immediately
-  - 7 = wait 7 days (recommended for delivery time)
+- **Trigger Order Status**: Select when to send invitations (usually "Completed")
+- **Invitation Delay (Days)**: How many days to wait before sending
 - **Invitation Type**: Choose what to request:
   - **Shop + Product Reviews**: Ask for both store and product reviews (recommended)
   - **Product Reviews Only**: Only ask for product reviews
   - **Shop Reviews Only**: Only ask for store reviews (no product-specific reviews)
 
 **Advanced Settings:**
-- **Max Products per Invitation**: How many products to include (1-10, recommended: 3-5)
+- **Max Products per Invitation**: How many products to include (recommended: 3-5)
   - Too many products can overwhelm customers
   - Focus on the most important items
 - **Product Sort Order**: Choose how to prioritize products when multiple items are in an order:
@@ -148,26 +142,14 @@ In the **Review Invitation Settings** section:
   - **SKU (Z to A)**: Sort by product code reverse alphabetically
 
 **Customer Settings:**
-- **Excluded Customer Groups**: Skip certain customer groups (e.g., wholesale customers)
-  - Hold Ctrl to select multiple groups
-  - Useful for B2B stores or special customer categories
+- **Excluded Customer Groups**: Skip certain user roles (e.g., wholesale customers)
+- **Auto-detect Language**: Automatically detect customer language from PrestaShop locale
+- **Fallback Language**: Default language if customer language can't be detected (e.g., "en" for English)
 
 **Choosing the Right Invitation Type:**
 - **Shop + Product Reviews**: Best for most stores - gives comprehensive feedback
 - **Product Reviews Only**: Good for stores focused on product quality and SEO
 - **Shop Reviews Only**: Ideal for service-based businesses or when you want to focus on overall customer experience
-
-Click **Save** when done.
-
-#### Configure Language Settings
-
-In the **Language Settings** section:
-- **Auto-detect Language**: Automatically detect customer language from their profile
-  - **Enabled**: Uses customer's language from their account
-  - **Disabled**: Uses fallback language for all customers
-- **Fallback Language**: Default language when auto-detection fails
-  - Choose from your store's available languages
-  - Common choices: English (en), Dutch (nl), German (de)
 
 Click **Save** when done.
 
@@ -178,7 +160,7 @@ Click **Save** when done.
 Once configured, the module works automatically:
 
 1. **Customer Places Order**: A customer completes a purchase
-2. **Order Status Changes**: You update the order to your configured trigger status (e.g., "Delivered")
+2. **Order is Completed**: You mark the order as "Completed" (or your configured status)
 3. **Waiting Period**: The system waits the configured delay (e.g., 7 days)
 4. **Review Request Sent**: Customer receives an email from Kiyoh/Klantenvertellen
 5. **Customer Leaves Review**: Customer clicks the link and writes a review
@@ -196,14 +178,12 @@ Customers receive a personalized email in their language with:
 
 ## Language Support
 
-The module supports multiple languages including:
-- **English** (en)
-- **Dutch** (nl) 
-- **German** (de)
-- **French** (fr)
-- And many more supported by Kiyoh/Klantenvertellen
-
-The module automatically detects the customer's language from their PrestaShop account and sends invitations in the appropriate language.
+The module supports 25+ languages including:
+- English, Dutch, German, French, Spanish, Italian
+- Portuguese, Danish, Swedish, Norwegian, Finnish
+- Polish, Czech, Slovak, Hungarian, Romanian
+- Chinese, Japanese, Turkish, Greek, Russian
+- And many more...
 
 ## Managing Reviews
 
@@ -233,52 +213,29 @@ The module automatically detects the customer's language from their PrestaShop a
 ### Common Issues
 
 **Module not working:**
-- Verify PrestaShop version compatibility (1.7+)
+- Verify PrestaShop is active and compatible
 - Check API credentials are correct
 - Test API connection in settings
-- Ensure module is enabled
 
 **Products not syncing:**
 - Ensure auto-sync is enabled
 - Check if products are excluded by type or code
-- Try manual bulk sync
-- Check PrestaShop error logs
+- Review error logs for specific issues
 
 **Invitations not sending:**
 - Verify trigger statuses are configured
 - Check if customers are in excluded groups
 - Ensure API connection is working
-- Verify order status changes are triggering correctly
 
 **Bulk sync stuck or failed:**
 - **Do not refresh or leave the page during bulk sync**
 - If sync fails, wait a few minutes and try again
 - Check your internet connection
-- Reduce the number of products if you have a very large catalog
 - Contact support if issues persist
 
 ### Debug Information
 
-Enable PrestaShop debug mode to see detailed information about module operations:
-1. Go to **Advanced Parameters > Performance**
-2. Set **Debug mode** to **Yes**
-3. Check error logs in **Advanced Parameters > Logs**
-
-Look for messages starting with "Kiyoh" to see module-specific information.
-
-## Multi-Store Support
-
-The module is compatible with PrestaShop multi-store installations:
-- Configure each store independently
-- Each store can have different API credentials
-- Separate product sync and invitation settings per store
-
-## Security
-
-- API keys are stored securely in PrestaShop configuration
-- All user inputs are sanitized and validated
-- AJAX requests include security tokens
-- Admin access controls prevent unauthorized configuration changes
+Enable PrestaShop debug mode to see detailed information about module operations. Check your PrestaShop error logs for messages starting with "Kiyoh".
 
 ## About This Module
 
@@ -293,54 +250,22 @@ The module is compatible with PrestaShop multi-store installations:
 For technical support:
 1. Check your API credentials and connection
 2. Review PrestaShop error logs
-3. Test with a single product/order first
-4. Contact your Kiyoh/Klantenvertellen account manager
-5. Consult module documentation
+3. Contact your review platform support team
+4. Consult module documentation
 
 ## Advanced Configuration
 
-### Custom Product Exclusions
+### Multisite Support
 
-You can exclude products from sync in several ways:
-- **By Type**: Virtual, pack, downloadable, customizable products
-- **By Status**: Out of stock, disabled products
-- **By Content**: Products without images, descriptions, or with zero price
-- **By Code**: Specific SKUs or product references
+The module is compatible with PrestaShop multi-store installations. Configure each store independently.
 
-### Invitation Timing Strategy
+### WPML/Polylang Compatibility
 
-**Recommended delay settings:**
-- **Digital products**: 1-3 days
-- **Physical products (fast shipping)**: 5-7 days  
-- **Physical products (standard shipping)**: 7-14 days
-- **Custom/made-to-order products**: 14-30 days
+The module works with multilingual plugins and will attempt to detect customer language for invitations.
 
-### Customer Segmentation
+## Security
 
-Use customer group exclusions for:
-- **Wholesale customers**: May have different review needs
-- **Test accounts**: Prevent test orders from triggering invitations
-- **VIP customers**: Handle manually for personalized service
-- **Problematic customers**: Temporarily exclude if needed
-
-## Best Practices
-
-### Product Management
-- Keep product information up-to-date for better sync results
-- Use high-quality product images (required for Kiyoh sync)
-- Write detailed product descriptions
-- Maintain accurate pricing and stock levels
-
-### Review Strategy
-- Don't overwhelm customers with too many product reviews (max 3-5)
-- Time invitations appropriately based on your delivery schedule
-- Focus on your best-selling or most important products
-- Monitor review response rates and adjust timing if needed
-
-### Customer Communication
-- Ensure customers know reviews are coming
-- Include review information in order confirmation emails
-- Provide excellent customer service to encourage positive reviews
-- Respond to all reviews, both positive and negative
-
-This comprehensive guide should help you get the most out of your Kiyoh Reviews PrestaShop module. Remember to test the configuration with a few orders before fully deploying to ensure everything works as expected.
+- API keys are stored securely in PrestaShop options
+- All user inputs are sanitized and validated
+- AJAX requests include nonce verification
+- User capability checks prevent unauthorized access
