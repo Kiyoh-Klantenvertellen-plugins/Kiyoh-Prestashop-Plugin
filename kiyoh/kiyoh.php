@@ -220,16 +220,26 @@ class Kiyoh extends Module
             return;
         }
 
-        // Product sync will be implemented in task 4
-        // For now, just log that the hook was triggered
-        PrestaShopLogger::addLog(
-            'Kiyoh: Product save hook triggered for product ID: ' . $params['id_product'],
-            1,
-            null,
-            'Kiyoh',
-            null,
-            true
-        );
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohProductSyncManager.php';
+            
+            $productId = isset($params['id_product']) ? (int)$params['id_product'] : 0;
+            if ($productId <= 0) {
+                return;
+            }
+
+            $syncManager = new KiyohProductSyncManager();
+            $syncManager->handleProductUpdate($productId);
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                'Kiyoh: Product save hook error: ' . $e->getMessage(),
+                3,
+                null,
+                'Kiyoh',
+                null,
+                true
+            );
+        }
     }
 
     /**
@@ -241,16 +251,26 @@ class Kiyoh extends Module
             return;
         }
 
-        // Product sync will be implemented in task 4
-        // For now, just log that the hook was triggered
-        PrestaShopLogger::addLog(
-            'Kiyoh: Product add hook triggered for product ID: ' . $params['id_product'],
-            1,
-            null,
-            'Kiyoh',
-            null,
-            true
-        );
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohProductSyncManager.php';
+            
+            $productId = isset($params['id_product']) ? (int)$params['id_product'] : 0;
+            if ($productId <= 0) {
+                return;
+            }
+
+            $syncManager = new KiyohProductSyncManager();
+            $syncManager->handleProductCreation($productId);
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                'Kiyoh: Product add hook error: ' . $e->getMessage(),
+                3,
+                null,
+                'Kiyoh',
+                null,
+                true
+            );
+        }
     }
 
     /**
@@ -300,7 +320,54 @@ class Kiyoh extends Module
      */
     public function getContent()
     {
-        return $this->getBasicConfigurationForm();
+        $output = '';
+        
+        // Handle bulk sync request
+        if (Tools::isSubmit('bulk_sync')) {
+            $output .= $this->processBulkSync();
+        }
+        
+        return $output . $this->getBasicConfigurationForm();
+    }
+
+    /**
+     * Process bulk product sync
+     */
+    private function processBulkSync()
+    {
+        try {
+            if (!Configuration::get('KIYOH_ENABLED')) {
+                return $this->displayError($this->l('Please enable the module first'));
+            }
+
+            require_once dirname(__FILE__) . '/classes/KiyohProductSyncManager.php';
+            
+            $syncManager = new KiyohProductSyncManager();
+            $results = $syncManager->bulkSyncProducts();
+
+            $message = sprintf(
+                $this->l('Bulk sync completed: %d total, %d synced, %d excluded, %d failed'),
+                $results['total'],
+                $results['synced'],
+                $results['excluded'],
+                $results['failed']
+            );
+
+            if (!empty($results['errors'])) {
+                $message .= '<br><br>' . $this->l('Errors:') . '<br>' . implode('<br>', array_slice($results['errors'], 0, 10));
+                if (count($results['errors']) > 10) {
+                    $message .= '<br>... ' . $this->l('and') . ' ' . (count($results['errors']) - 10) . ' ' . $this->l('more errors');
+                }
+            }
+
+            if ($results['failed'] > 0) {
+                return $this->displayWarning($message);
+            }
+
+            return $this->displayConfirmation($message);
+        } catch (Exception $e) {
+            return $this->displayError($this->l('Bulk sync failed: ') . $e->getMessage());
+        }
     }
 
     /**
@@ -360,13 +427,14 @@ class Kiyoh extends Module
         // Save all configuration values
         $triggerStatus = Tools::getValue('KIYOH_TRIGGER_STATUS');
         $excludedGroups = Tools::getValue('KIYOH_EXCLUDED_GROUPS');
+        $excludedTypes = Tools::getValue('KIYOH_EXCLUDED_TYPES');
 
         Configuration::updateValue('KIYOH_ENABLED', (int)Tools::getValue('KIYOH_ENABLED'));
         Configuration::updateValue('KIYOH_PLATFORM', strval(Tools::getValue('KIYOH_PLATFORM')));
         Configuration::updateValue('KIYOH_LOCATION_ID', $kiyoh_location_id);
         Configuration::updateValue('KIYOH_API_KEY', $kiyoh_api_key);
         Configuration::updateValue('KIYOH_AUTO_SYNC', (int)Tools::getValue('KIYOH_AUTO_SYNC'));
-        Configuration::updateValue('KIYOH_EXCLUDED_TYPES', strval(Tools::getValue('KIYOH_EXCLUDED_TYPES')));
+        Configuration::updateValue('KIYOH_EXCLUDED_TYPES', is_array($excludedTypes) ? implode(',', $excludedTypes) : '');
         Configuration::updateValue('KIYOH_EXCLUDED_CODES', strval(Tools::getValue('KIYOH_EXCLUDED_CODES')));
         Configuration::updateValue('KIYOH_TRIGGER_STATUS', is_array($triggerStatus) ? implode(',', $triggerStatus) : '');
         Configuration::updateValue('KIYOH_DELAY_DAYS', $delay_days);
@@ -378,6 +446,28 @@ class Kiyoh extends Module
         Configuration::updateValue('KIYOH_FALLBACK_LANGUAGE', strval(Tools::getValue('KIYOH_FALLBACK_LANGUAGE')));
 
         return $this->displayConfirmation($this->l('Settings updated'));
+    }
+
+    /**
+     * Get product type options for dropdown
+     *
+     * @return array Product type options
+     */
+    private function getProductTypeOptions()
+    {
+        return array(
+            array('id_option' => 'none', 'name' => $this->l('No Exclusions')),
+            array('id_option' => 'virtual', 'name' => $this->l('Virtual Products')),
+            array('id_option' => 'pack', 'name' => $this->l('Pack Products')),
+            array('id_option' => 'downloadable', 'name' => $this->l('Downloadable Products')),
+            array('id_option' => 'combination', 'name' => $this->l('Products with Combinations')),
+            array('id_option' => 'out_of_stock', 'name' => $this->l('Out of Stock Products')),
+            array('id_option' => 'disabled', 'name' => $this->l('Disabled Products')),
+            array('id_option' => 'no_image', 'name' => $this->l('Products without Images')),
+            array('id_option' => 'no_description', 'name' => $this->l('Products without Description')),
+            array('id_option' => 'no_price', 'name' => $this->l('Products with Zero Price')),
+            array('id_option' => 'customizable', 'name' => $this->l('Customizable Products'))
+        );
     }
 
     /**
@@ -513,11 +603,16 @@ class Kiyoh extends Module
                     ),
                 ),
                 array(
-                    'type' => 'textarea',
+                    'type' => 'select',
                     'label' => $this->l('Excluded Product Types'),
-                    'name' => 'KIYOH_EXCLUDED_TYPES',
-                    'desc' => $this->l('Comma-separated list of product types to exclude (e.g., virtual, pack)'),
-                    'rows' => 2,
+                    'name' => 'KIYOH_EXCLUDED_TYPES[]',
+                    'multiple' => true,
+                    'desc' => $this->l('Select product types to exclude from synchronization (hold Ctrl to select multiple)'),
+                    'options' => array(
+                        'query' => $this->getProductTypeOptions(),
+                        'id' => 'id_option',
+                        'name' => 'name'
+                    ),
                 ),
                 array(
                     'type' => 'textarea',
@@ -527,6 +622,15 @@ class Kiyoh extends Module
                     'rows' => 2,
                 ),
             ),
+            'buttons' => array(
+                array(
+                    'title' => $this->l('Bulk Sync All Products'),
+                    'name' => 'bulk_sync',
+                    'type' => 'submit',
+                    'class' => 'btn btn-primary',
+                    'icon' => 'process-icon-refresh'
+                )
+            )
         );
 
         // Review Invitation Settings
@@ -674,13 +778,14 @@ class Kiyoh extends Module
         // Load current values
         $triggerStatus = Configuration::get('KIYOH_TRIGGER_STATUS');
         $excludedGroups = Configuration::get('KIYOH_EXCLUDED_GROUPS');
+        $excludedTypes = Configuration::get('KIYOH_EXCLUDED_TYPES');
 
         $helper->fields_value['KIYOH_ENABLED'] = Configuration::get('KIYOH_ENABLED');
         $helper->fields_value['KIYOH_PLATFORM'] = Configuration::get('KIYOH_PLATFORM');
         $helper->fields_value['KIYOH_LOCATION_ID'] = Configuration::get('KIYOH_LOCATION_ID');
         $helper->fields_value['KIYOH_API_KEY'] = Configuration::get('KIYOH_API_KEY');
         $helper->fields_value['KIYOH_AUTO_SYNC'] = Configuration::get('KIYOH_AUTO_SYNC');
-        $helper->fields_value['KIYOH_EXCLUDED_TYPES'] = Configuration::get('KIYOH_EXCLUDED_TYPES');
+        $helper->fields_value['KIYOH_EXCLUDED_TYPES[]'] = !empty($excludedTypes) ? explode(',', $excludedTypes) : array();
         $helper->fields_value['KIYOH_EXCLUDED_CODES'] = Configuration::get('KIYOH_EXCLUDED_CODES');
         $helper->fields_value['KIYOH_TRIGGER_STATUS[]'] = !empty($triggerStatus) ? explode(',', $triggerStatus) : array();
         $helper->fields_value['KIYOH_DELAY_DAYS'] = Configuration::get('KIYOH_DELAY_DAYS');

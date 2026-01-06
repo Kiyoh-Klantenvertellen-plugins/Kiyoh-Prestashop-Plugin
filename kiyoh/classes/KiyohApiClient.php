@@ -79,6 +79,41 @@ class KiyohApiClient extends KiyohApi
     }
 
     /**
+     * Sync multiple products to the platform in bulk (up to 200 products)
+     *
+     * @param array $products Array of product data arrays
+     * @return array API response
+     * @throws Exception on API errors
+     */
+    public function syncProductBulk(array $products): array
+    {
+        $url = $this->getBaseUrl() . '/v1/location/product/external/bulk';
+        
+        // Build bulk request data
+        $bulkData = [
+            'location_id' => $this->locationId,
+            'products' => []
+        ];
+        
+        foreach ($products as $productData) {
+            // Ensure each product has location_id
+            $productData['location_id'] = $this->locationId;
+            $bulkData['products'][] = $productData;
+        }
+        
+        try {
+            $response = $this->makeRequest('PUT', $url, $bulkData);
+            
+            $this->logApiCall('syncProductBulk', $url, ['count' => count($products)], $response);
+            
+            return $response;
+        } catch (Exception $e) {
+            $this->logError('syncProductBulk', $e->getMessage(), ['count' => count($products)]);
+            throw $e;
+        }
+    }
+
+    /**
      * Send review invitation to customer
      *
      * @param array $invitationData Invitation data

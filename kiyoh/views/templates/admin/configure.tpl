@@ -101,8 +101,14 @@
                     
                     <div class="form-group">
                         <label for="KIYOH_EXCLUDED_TYPES">{l s='Excluded Product Types' mod='kiyoh'}</label>
-                        <textarea id="KIYOH_EXCLUDED_TYPES" name="KIYOH_EXCLUDED_TYPES" class="form-control" rows="3">{$KIYOH_EXCLUDED_TYPES|escape:'html':'UTF-8'}</textarea>
-                        <div class="help-block">{l s='Comma-separated list of product types to exclude from sync (e.g., virtual, downloadable)' mod='kiyoh'}</div>
+                        <select id="KIYOH_EXCLUDED_TYPES" name="KIYOH_EXCLUDED_TYPES[]" class="form-control" multiple>
+                            {foreach from=$available_product_types key=type_key item=type_label}
+                                <option value="{$type_key}" {if in_array($type_key, $KIYOH_EXCLUDED_TYPES_ARRAY)}selected{/if}>
+                                    {l s=$type_label mod='kiyoh'}
+                                </option>
+                            {/foreach}
+                        </select>
+                        <div class="help-block">{l s='Select product types to exclude from synchronization' mod='kiyoh'}</div>
                     </div>
                     
                     <div class="form-group">

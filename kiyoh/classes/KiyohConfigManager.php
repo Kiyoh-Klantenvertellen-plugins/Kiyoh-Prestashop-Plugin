@@ -179,6 +179,57 @@ class KiyohConfigManager
     }
 
     /**
+     * Get available product types for exclusion
+     *
+     * @return array Available product types with labels
+     */
+    public static function getAvailableProductTypes(): array
+    {
+        return [
+            'virtual' => 'Virtual Products',
+            'pack' => 'Pack Products', 
+            'downloadable' => 'Downloadable Products',
+            'combination' => 'Products with Combinations',
+            'out_of_stock' => 'Out of Stock Products',
+            'disabled' => 'Disabled Products',
+            'no_image' => 'Products without Images',
+            'no_description' => 'Products without Description',
+            'no_price' => 'Products with Zero Price',
+            'customizable' => 'Customizable Products'
+        ];
+    }
+
+    /**
+     * Get product categories for exclusion dropdown
+     *
+     * @return array Categories with ID and name
+     */
+    public static function getProductCategories(): array
+    {
+        $categories = [];
+        
+        try {
+            $sql = new DbQuery();
+            $sql->select('c.id_category, cl.name');
+            $sql->from('category', 'c');
+            $sql->leftJoin('category_lang', 'cl', 'c.id_category = cl.id_category AND cl.id_lang = ' . (int)Context::getContext()->language->id);
+            $sql->where('c.active = 1 AND c.id_category != 1'); // Exclude root category
+            $sql->orderBy('cl.name ASC');
+            
+            $results = Db::getInstance()->executeS($sql);
+            
+            foreach ($results as $row) {
+                $categories[$row['id_category']] = $row['name'];
+            }
+        } catch (Exception $e) {
+            // Log error but don't break functionality
+            PrestaShopLogger::addLog('Kiyoh: Error loading categories - ' . $e->getMessage(), 3);
+        }
+        
+        return $categories;
+    }
+
+    /**
      * Validate configuration
      *
      * @return array Validation errors (empty if valid)
