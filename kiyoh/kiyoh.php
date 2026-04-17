@@ -17,7 +17,7 @@ class Kiyoh extends Module
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.0.0';
+        $this->version = '1.1.0';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array('min' => '1.7', 'max' => _PS_VERSION_);

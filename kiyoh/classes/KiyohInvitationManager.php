@@ -14,6 +14,7 @@ if (!defined('_PS_VERSION_')) {
 require_once dirname(__FILE__) . '/KiyohApiClient.php';
 require_once dirname(__FILE__) . '/KiyohInvitationData.php';
 require_once dirname(__FILE__) . '/KiyohConfigManager.php';
+require_once dirname(__FILE__) . '/KiyohProductSyncManager.php';
 
 /**
  * Manages automated review invitations
@@ -67,6 +68,11 @@ class KiyohInvitationManager
             $validationErrors = $invitationData->validate();
             if (!empty($validationErrors)) {
                 throw new Exception('Invitation data validation failed: ' . implode(', ', $validationErrors));
+            }
+
+            // Sync products before sending invitation to prevent PRODUCT_NOT_FOUND errors
+            if (!empty($invitationData->productCodes)) {
+                $this->syncProductsBeforeInvitation($order, $invitationData->productCodes);
             }
 
             // Send invitation via API
@@ -398,6 +404,31 @@ class KiyohInvitationManager
         } catch (Exception $e) {
             $this->logError('recordInvitation', $e->getMessage(), $order->id);
             return false;
+        }
+    }
+
+    /**
+     * Sync order products before sending invitation to prevent PRODUCT_NOT_FOUND errors
+     *
+     * @param Order $order PrestaShop order object
+     * @param array $productCodes Product codes from invitation
+     * @return void
+     */
+    private function syncProductsBeforeInvitation(Order $order, array $productCodes): void
+    {
+        $syncEnabled = Configuration::get('KIYOH_PRODUCT_SYNC_ENABLED');
+        if (!$syncEnabled) {
+            return;
+        }
+
+        try {
+            $syncManager = new KiyohProductSyncManager($this->apiClient);
+            foreach ($order->getProducts() as $product) {
+                $productId = (int)$product['product_id'];
+                $syncManager->syncSingleProduct($productId);
+            }
+        } catch (Exception $e) {
+            $this->logError('syncProductsBeforeInvitation', $e->getMessage(), $order->id);
         }
     }
 
