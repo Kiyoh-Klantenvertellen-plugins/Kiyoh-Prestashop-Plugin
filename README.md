@@ -19,19 +19,25 @@ Kiyoh Reviews is a PrestaShop module that automatically collects customer review
 ## System Requirements
 
 ### Minimum Requirements
-- **PrestaShop**: 1.7 or higher
-- **PHP**: 7.1 or higher
+- **PrestaShop**: 1.7.0.0 or higher
+- **PHP**: 8.2 or higher
 - **Server Extensions**: cURL, JSON (usually pre-installed)
 
+### Tested compatibility
+The module declares an explicit upper bound. It does not claim to support every future PrestaShop release.
+
+- **Tested on**: PrestaShop 9.2.0 (Symfony 6.4, PHP 8.2+)
+- **PrestaShop range**: 1.7.0.0 through 9.2.0
+- **PHP**: 8.2 minimum (8.3 and 8.4 included)
+
 ### Recommended for Best Performance
-- **PrestaShop**: 1.7.8 or higher (latest version)
-- **PHP**: 8.0 or higher
+- **PrestaShop**: 9.2.0
+- **PHP**: 8.2 or higher
 - **SSL Certificate**: For secure API communication
 
 ### Compatibility
 The module is compatible with:
-- ✅ PrestaShop 1.7+ installations
-- ✅ All standard PrestaShop installations
+- ✅ PrestaShop 1.7.0.0 through 9.2.0
 - ✅ Multi-store installations
 - ✅ Cloud hosting and shared hosting
 
@@ -239,11 +245,12 @@ Enable PrestaShop debug mode to see detailed information about module operations
 
 ## About This Module
 
-**Version**: 1.0.0  
-**Compatibility**: PrestaShop 1.7+  
+**Version**: 1.2.0  
+**Compatibility**: PrestaShop 1.7.0.0–9.2.0  
+**PHP**: 8.2 or higher  
 **Developer**: Kiyoh  
 **License**: Proprietary 
-**Last Updated**: January 2025  
+**Last Updated**: October 2026  
 
 ## Support
 

@@ -11,6 +11,8 @@ if (!defined('_PS_VERSION_')) {
     exit;
 }
 
+require_once dirname(__FILE__) . '/KiyohProductData.php';
+
 /**
  * Invitation data structure for Kiyoh API
  */
@@ -172,8 +174,8 @@ class KiyohInvitationData
         // Try to get language from order
         if ($order->id_lang) {
             $language = new Language($order->id_lang);
-            if ($language->iso_code) {
-                return strtolower($language->iso_code);
+            if (Validate::isLoadedObject($language) && !empty($language->iso_code)) {
+                return strtolower((string) $language->iso_code);
             }
         }
         
@@ -181,29 +183,21 @@ class KiyohInvitationData
         $customer = new Customer($order->id_customer);
         if (Validate::isLoadedObject($customer) && $customer->id_lang) {
             $language = new Language($customer->id_lang);
-            if ($language->iso_code) {
-                return strtolower($language->iso_code);
+            if (Validate::isLoadedObject($language) && !empty($language->iso_code)) {
+                return strtolower((string) $language->iso_code);
             }
         }
-        
-        // Try to get language from delivery address country
-        $address = new Address($order->id_address_delivery);
-        if (Validate::isLoadedObject($address) && $address->id_country) {
-            $country = new Country($address->id_country);
-            if (Validate::isLoadedObject($country) && $country->id_lang) {
-                $language = new Language($country->id_lang);
-                if ($language->iso_code) {
-                    return strtolower($language->iso_code);
-                }
-            }
-        }
+
+        // ps_country has no language id. Reading Country::$id_lang is an
+        // undefined-property warning on PHP 8.2 and becomes an exception
+        // when PrestaShop dev mode is on, which aborts the order hook.
         
         // Fallback to default language
         $defaultLang = Configuration::get('PS_LANG_DEFAULT');
         if ($defaultLang) {
             $language = new Language($defaultLang);
-            if ($language->iso_code) {
-                return strtolower($language->iso_code);
+            if (Validate::isLoadedObject($language) && !empty($language->iso_code)) {
+                return strtolower((string) $language->iso_code);
             }
         }
         
@@ -248,7 +242,7 @@ class KiyohInvitationData
             
             $products[$productCode] = [
                 'code' => $productCode,
-                'name' => $product->name[Context::getContext()->language->id] ?? '',
+                'name' => KiyohProductData::localizedValue($product->name, (int) Context::getContext()->language->id),
                 'price' => (float)$detail['unit_price_tax_incl'],
                 'product_id' => $detail['product_id']
             ];

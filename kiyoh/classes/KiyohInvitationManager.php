@@ -94,7 +94,7 @@ class KiyohInvitationManager
                 'api_response' => $apiResponse
             ];
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             // Record failed invitation
             if (isset($invitationData)) {
                 $this->recordInvitation($order, $invitationData, 'failed', ['error' => $e->getMessage()]);
@@ -203,7 +203,7 @@ class KiyohInvitationManager
                 $this->logError('handleOrderStatusUpdate', $result['message'], $orderId);
             }
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             $this->logError('handleOrderStatusUpdate', $e->getMessage(), $orderId ?? 0);
         }
     }
@@ -301,7 +301,7 @@ class KiyohInvitationManager
             
             $products[$productCode] = [
                 'code' => $productCode,
-                'name' => $product->name[Context::getContext()->language->id] ?? '',
+                'name' => KiyohProductData::localizedValue($product->name, (int) Context::getContext()->language->id),
                 'price' => (float)$detail['unit_price_tax_incl'],
                 'product_id' => $detail['product_id']
             ];
@@ -399,7 +399,9 @@ class KiyohInvitationManager
                 'date_add' => date('Y-m-d H:i:s')
             ];
             
-            return Db::getInstance()->insert('kiyoh_invitations', $data);
+            // null_values writes SQL NULL. An empty string in sent_at fails
+            // under the strict sql_mode PrestaShop 9 enables by default.
+            return Db::getInstance()->insert('kiyoh_invitations', $data, true);
             
         } catch (Exception $e) {
             $this->logError('recordInvitation', $e->getMessage(), $order->id);
@@ -416,7 +418,9 @@ class KiyohInvitationManager
      */
     private function syncProductsBeforeInvitation(Order $order, array $productCodes): void
     {
-        $syncEnabled = Configuration::get('KIYOH_PRODUCT_SYNC_ENABLED');
+        // There is no KIYOH_PRODUCT_SYNC_ENABLED key. Auto sync is the switch
+        // the configuration page actually stores.
+        $syncEnabled = Configuration::get('KIYOH_AUTO_SYNC');
         if (!$syncEnabled) {
             return;
         }

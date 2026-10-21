@@ -13,14 +13,30 @@ if (!defined('_PS_VERSION_')) {
 
 class Kiyoh extends Module
 {
+    /**
+     * Lowest PHP version this module will install on.
+     * PrestaShop 9 supports PHP 8.1+, but this module requires 8.2.
+     */
+    public const MIN_PHP_VERSION = '8.2.0';
+
+    /**
+     * Highest PrestaShop release this module has been tested on.
+     * Must be an explicit version. Using _PS_VERSION_ makes the compliancy
+     * check compare the running shop with itself, so every release looks supported.
+     */
+    public const TESTED_PS_VERSION_MAX = '9.2.0';
+
     public function __construct()
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.1.0';
+        $this->version = '1.2.0';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
-        $this->ps_versions_compliancy = array('min' => '1.7', 'max' => _PS_VERSION_);
+        $this->ps_versions_compliancy = array(
+            'min' => '1.7.0.0',
+            'max' => self::TESTED_PS_VERSION_MAX,
+        );
         $this->bootstrap = true;
 
         parent::__construct();
@@ -29,7 +45,9 @@ class Kiyoh extends Module
         $this->description = $this->l('Integrate your PrestaShop store with Kiyoh/Klantenvertellen review platforms for automated product sync and review invitations.');
         $this->confirmUninstall = $this->l('Are you sure you want to uninstall the Kiyoh Reviews module?');
 
-        if (!Configuration::get('KIYOH_ENABLED')) {
+        if (!$this->isPhpVersionSupported()) {
+            $this->warning = $this->l('Kiyoh Reviews requires PHP 8.2 or higher.');
+        } elseif (!Configuration::get('KIYOH_ENABLED')) {
             $this->warning = $this->l('No configuration provided');
         }
     }
@@ -39,9 +57,21 @@ class Kiyoh extends Module
      */
     public function install()
     {
+        if (!$this->assertPhpVersion()) {
+            return false;
+        }
+
         // Remove any existing broken admin tab first
         $this->uninstallAdminTab();
-        
+
+        // actionProductSave is dispatched by Product::add() and Product::update().
+        // The PrestaShop 9 product page still saves through those methods.
+        // actionProductAdd is no longer dispatched by Product::add() in 9.x; it
+        // stays registered for 1.7/8 shops that still fire it.
+        // Hooks removed with the legacy product page and the legacy login
+        // controller (actionAdminProductsController*, actionAdminLoginController*)
+        // are not used. This module has no Symfony services, so the 6.4
+        // container and attribute changes do not apply to it.
         return parent::install() &&
             $this->registerHook('actionProductSave') &&
             $this->registerHook('actionProductAdd') &&
@@ -49,6 +79,32 @@ class Kiyoh extends Module
             $this->registerHook('actionCronJob') &&
             $this->installDb() &&
             $this->installConfiguration();
+    }
+
+    /**
+     * @return bool
+     */
+    private function isPhpVersionSupported()
+    {
+        return version_compare(PHP_VERSION, self::MIN_PHP_VERSION, '>=');
+    }
+
+    /**
+     * @return bool
+     */
+    private function assertPhpVersion()
+    {
+        if ($this->isPhpVersionSupported()) {
+            return true;
+        }
+
+        $this->_errors[] = sprintf(
+            $this->l('Kiyoh Reviews requires PHP %s or higher. This server is running PHP %s.'),
+            self::MIN_PHP_VERSION,
+            PHP_VERSION
+        );
+
+        return false;
     }
 
     /**
@@ -81,7 +137,7 @@ class Kiyoh extends Module
             PRIMARY KEY (`id_sync`),
             KEY `id_product` (`id_product`),
             KEY `sync_status` (`sync_status`)
-        ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8;';
+        ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8mb4;';
 
         // Invitation tracking table
         $sql[] = 'CREATE TABLE IF NOT EXISTS `' . _DB_PREFIX_ . 'kiyoh_invitations` (
@@ -98,7 +154,7 @@ class Kiyoh extends Module
             KEY `id_order` (`id_order`),
             KEY `customer_email` (`customer_email`),
             KEY `status` (`status`)
-        ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8;';
+        ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8mb4;';
 
         foreach ($sql as $query) {
             try {
@@ -230,7 +286,7 @@ class Kiyoh extends Module
 
             $syncManager = new KiyohProductSyncManager();
             $syncManager->handleProductUpdate($productId);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             PrestaShopLogger::addLog(
                 'Kiyoh: Product save hook error: ' . $e->getMessage(),
                 3,
@@ -261,7 +317,7 @@ class Kiyoh extends Module
 
             $syncManager = new KiyohProductSyncManager();
             $syncManager->handleProductCreation($productId);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             PrestaShopLogger::addLog(
                 'Kiyoh: Product add hook error: ' . $e->getMessage(),
                 3,
@@ -287,7 +343,7 @@ class Kiyoh extends Module
             
             $invitationManager = new KiyohInvitationManager();
             $invitationManager->handleOrderStatusUpdate($params);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             PrestaShopLogger::addLog(
                 'Kiyoh: Order status update hook error: ' . $e->getMessage(),
                 3,
@@ -765,7 +821,7 @@ class Kiyoh extends Module
         $helper->module = $this;
         $helper->name_controller = $this->name;
         $helper->token = Tools::getAdminTokenLite('AdminModules');
-        $helper->currentIndex = AdminController::$currentIndex . '&configure=' . $this->name;
+        $helper->currentIndex = $this->getConfigureFormIndex();
         $helper->default_form_language = $default_lang;
         $helper->allow_employee_form_lang = $default_lang;
         $helper->title = $this->displayName;
@@ -805,6 +861,44 @@ class Kiyoh extends Module
         $helper->fields_value['KIYOH_FALLBACK_LANGUAGE'] = Configuration::get('KIYOH_FALLBACK_LANGUAGE');
 
         return $helper->generateForm($fields_form);
+    }
+
+    /**
+     * Absolute action for the configuration form.
+     *
+     * PrestaShop 9 renders this page at
+     * /index.php/improve/modules/manage/action/configure/{module}. HelperForm's
+     * default action is the relative "index.php?controller=AdminModules", which
+     * the browser resolves against that path and posts to the wrong URL, so
+     * Save never reaches this module. PrestaShop 8.2 redirects that route to
+     * the legacy controller, and 1.7 never uses it, so those requests keep
+     * AdminController::$currentIndex.
+     *
+     * @return string
+     */
+    private function getConfigureFormIndex()
+    {
+        $legacy = AdminController::$currentIndex . '&configure=' . $this->name;
+        $requestUri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        $marker = '/configure/' . $this->name;
+        if ($requestUri === '' || strpos($requestUri, $marker) === false) {
+            return $legacy;
+        }
+
+        $path = strtok($requestUri, '?');
+        if (!is_string($path) || $path === '') {
+            return $legacy;
+        }
+
+        $host = Tools::getHttpHost(false);
+        if (!is_string($host) || $host === '') {
+            return $legacy;
+        }
+
+        $scheme = Tools::usingSecureMode() ? 'https://' : 'http://';
+
+        // HelperForm appends "&token=", so the action must already have a query.
+        return $scheme . $host . $path . '?configure=' . $this->name;
     }
 
     /**

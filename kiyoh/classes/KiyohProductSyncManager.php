@@ -31,7 +31,7 @@ class KiyohProductSyncManager
      *
      * @param KiyohApiClient|null $apiClient Optional API client instance
      */
-    public function __construct(KiyohApiClient $apiClient = null)
+    public function __construct(?KiyohApiClient $apiClient = null)
     {
         $this->apiClient = $apiClient;
         $this->config = KiyohConfigManager::getProductSyncConfig();
@@ -93,7 +93,7 @@ class KiyohProductSyncManager
             $this->logInfo('Product synced successfully', $productId);
 
             return true;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             $this->logError('Product sync failed: ' . $e->getMessage(), $productId);
             $this->updateSyncStatus($productId, 'error', $e->getMessage());
             return false;
@@ -459,10 +459,13 @@ class KiyohProductSyncManager
      */
     private function hasNoDescription(Product $product): bool
     {
-        $description = trim($product->description);
-        $shortDescription = trim($product->description_short);
-        
-        return empty($description) && empty($shortDescription);
+        $langId = (int) Context::getContext()->language->id;
+        // Product loaded without an id_lang stores multilingual fields as arrays.
+        // trim() rejects arrays on PHP 8.
+        $description = KiyohProductData::localizedValue($product->description, $langId);
+        $shortDescription = KiyohProductData::localizedValue($product->description_short, $langId);
+
+        return trim($description) === '' && trim($shortDescription) === '';
     }
 
     /**
@@ -555,7 +558,7 @@ class KiyohProductSyncManager
      * @param string $status Sync status
      * @param string|null $errorMessage Error message if failed
      */
-    private function updateSyncStatus(int $productId, string $status, string $errorMessage = null): void
+    private function updateSyncStatus(int $productId, string $status, ?string $errorMessage = null): void
     {
         $now = date('Y-m-d H:i:s');
 
@@ -581,7 +584,7 @@ class KiyohProductSyncManager
                 $data['error_message'] = pSQL($errorMessage);
             }
 
-            Db::getInstance()->update('kiyoh_product_sync', $data, 'id_product = ' . $productId);
+            Db::getInstance()->update('kiyoh_product_sync', $data, 'id_product = ' . (int) $productId, 0, true);
         } else {
             // Insert new record
             $data = [
@@ -713,7 +716,7 @@ class KiyohProductSyncManager
      * @param string $message Log message
      * @param int|null $productId Product ID for context
      */
-    private function logInfo(string $message, int $productId = null): void
+    private function logInfo(string $message, ?int $productId = null): void
     {
         $logMessage = 'Kiyoh ProductSync: ' . $message;
         if ($productId) {
@@ -736,7 +739,7 @@ class KiyohProductSyncManager
      * @param string $message Error message
      * @param int|null $productId Product ID for context
      */
-    private function logError(string $message, int $productId = null): void
+    private function logError(string $message, ?int $productId = null): void
     {
         $logMessage = 'Kiyoh ProductSync Error: ' . $message;
         if ($productId) {

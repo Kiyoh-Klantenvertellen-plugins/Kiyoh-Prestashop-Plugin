@@ -1,0 +1,15 @@
+{
+    "name": "kiyoh/prestashop-kiyoh",
+    "description": "Kiyoh Reviews module for PrestaShop. Requires PHP 8.2 or higher and has been tested on PrestaShop 9.2.0.",
+    "type": "prestashop-module",
+    "license": "AFL-3.0",
+    "require": {
+        "php": ">=8.2"
+    },
+    "config": {
+        "prepend-autoloader": false,
+        "platform": {
+            "php": "8.2.0"
+        }
+    }
+}
