@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS `PREFIX_kiyoh_product_sync` (
     PRIMARY KEY (`id_sync`),
     KEY `id_product` (`id_product`),
     KEY `sync_status` (`sync_status`)
-) ENGINE=ENGINE_TYPE DEFAULT CHARSET=utf8;
+) ENGINE=ENGINE_TYPE DEFAULT CHARSET=utf8mb4;
 
 -- Invitation tracking table
 CREATE TABLE IF NOT EXISTS `PREFIX_kiyoh_invitations` (
@@ -30,4 +30,4 @@ CREATE TABLE IF NOT EXISTS `PREFIX_kiyoh_invitations` (
     KEY `id_order` (`id_order`),
     KEY `customer_email` (`customer_email`),
     KEY `status` (`status`)
-) ENGINE=ENGINE_TYPE DEFAULT CHARSET=utf8;
+) ENGINE=ENGINE_TYPE DEFAULT CHARSET=utf8mb4;

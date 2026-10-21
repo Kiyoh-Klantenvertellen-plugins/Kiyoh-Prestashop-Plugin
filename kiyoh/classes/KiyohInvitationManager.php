@@ -301,7 +301,7 @@ class KiyohInvitationManager
             
             $products[$productCode] = [
                 'code' => $productCode,
-                'name' => $product->name[Context::getContext()->language->id] ?? '',
+                'name' => KiyohProductData::localizedValue($product->name, (int) Context::getContext()->language->id),
                 'price' => (float)$detail['unit_price_tax_incl'],
                 'product_id' => $detail['product_id']
             ];
@@ -399,7 +399,9 @@ class KiyohInvitationManager
                 'date_add' => date('Y-m-d H:i:s')
             ];
             
-            return Db::getInstance()->insert('kiyoh_invitations', $data);
+            // null_values writes SQL NULL. An empty string in sent_at fails
+            // under the strict sql_mode PrestaShop 9 enables by default.
+            return Db::getInstance()->insert('kiyoh_invitations', $data, true);
             
         } catch (Exception $e) {
             $this->logError('recordInvitation', $e->getMessage(), $order->id);

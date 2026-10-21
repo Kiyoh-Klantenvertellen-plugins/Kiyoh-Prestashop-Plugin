@@ -164,18 +164,25 @@ class KiyohConfigManager
     }
 
     /**
-     * Parse comma-separated string into array
+     * Parse comma-separated string into array.
      *
-     * @param string $value Comma-separated string
+     * Configuration::get() returns false when a key is missing. A string
+     * type hint turns that into a TypeError on PHP 8.
+     *
+     * @param mixed $value Comma-separated string, or false/null when unset
      * @return array Parsed array
      */
-    private static function parseCommaSeparated(string $value): array
+    private static function parseCommaSeparated($value): array
     {
-        if (empty($value)) {
+        if (!is_string($value) || $value === '') {
             return [];
         }
-        
-        return array_map('trim', explode(',', $value));
+
+        $parts = array_map('trim', explode(',', $value));
+
+        return array_values(array_filter($parts, static function ($part) {
+            return $part !== '';
+        }));
     }
 
     /**

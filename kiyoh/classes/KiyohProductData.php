@@ -50,7 +50,7 @@ class KiyohProductData
      * @param int|null $langId Language ID (optional)
      * @return KiyohProductData
      */
-    public static function fromPrestaShopProduct(Product $product, int $langId = null): KiyohProductData
+    public static function fromPrestaShopProduct(Product $product, ?int $langId = null): KiyohProductData
     {
         if ($langId === null) {
             $langId = (int)Configuration::get('PS_LANG_DEFAULT');
@@ -58,9 +58,10 @@ class KiyohProductData
         
         $productData = new self();
         
-        // Basic product information
-        $productData->name = $product->name[$langId] ?? '';
-        $productData->code = $product->reference ?? $product->id;
+        // Basic product information. Multilingual fields are arrays when the
+        // product is loaded without an id_lang, and strings when it is not.
+        $productData->name = self::localizedValue($product->name, $langId);
+        $productData->code = (string) ($product->reference ?: $product->id);
         $productData->active = (bool)$product->active;
         
         // URLs
@@ -75,33 +76,123 @@ class KiyohProductData
             $langId
         );
         
-        // Get product image
+        // Get product image. PrestaShop 9 dropped the legacy image filesystem
+        // and shops may store webp/avif (PS_IMAGE_FORMAT) instead of jpg.
         $images = Image::getImages($langId, $product->id);
         if (!empty($images)) {
             $image = array_shift($images);
-            $productData->imageUrl = $link->getImageLink(
-                $product->link_rewrite[$langId] ?? $product->id,
-                $image['id_image'],
-                'large_default'
-            );
+            $rewrite = self::localizedValue($product->link_rewrite, $langId);
+            if ($rewrite === '') {
+                $rewrite = (string) $product->id;
+            }
+            $productData->imageUrl = self::buildImageUrl($link, $rewrite, (int) $image['id_image']);
         } else {
             $productData->imageUrl = '';
         }
         
-        // Brand/Manufacturer
+        // Brand/Manufacturer. Manufacturer name is multilingual.
         if ($product->id_manufacturer) {
             $manufacturer = new Manufacturer($product->id_manufacturer);
-            $productData->brandName = $manufacturer->name ?? '';
+            $productData->brandName = self::localizedValue($manufacturer->name, $langId);
         } else {
             $productData->brandName = '';
         }
         
-        // Product identifiers
-        $productData->sku = $product->reference ?? '';
-        $productData->gtin = $product->ean13 ?? '';
-        $productData->mpn = $product->mpn ?? '';
+        // Product identifiers. ean13 remains the legacy column; the gtin rename
+        // in 9.0 applies to CQRS return values, not this object field.
+        $productData->sku = (string) ($product->reference ?? '');
+        $productData->gtin = (string) ($product->ean13 ?? '');
+        $productData->mpn = (string) ($product->mpn ?? '');
         
         return $productData;
+    }
+
+    /**
+     * Read a field that may be a plain string or a language-indexed array.
+     *
+     * @param mixed $value Field value
+     * @param int $langId Preferred language id
+     * @return string
+     */
+    public static function localizedValue($value, int $langId): string
+    {
+        if (is_array($value)) {
+            if (isset($value[$langId]) && is_scalar($value[$langId])) {
+                return (string) $value[$langId];
+            }
+
+            foreach ($value as $item) {
+                if (is_scalar($item) && (string) $item !== '') {
+                    return (string) $item;
+                }
+            }
+
+            return '';
+        }
+
+        return is_scalar($value) ? (string) $value : '';
+    }
+
+    /**
+     * Build an absolute product image URL for the shop's image format.
+     *
+     * Link::getImageLink() gained a fourth $extension argument after 1.7.
+     * Passing it on older signatures is an ArgumentCountError on PHP 8.
+     *
+     * @param Link $link
+     * @param string $rewrite
+     * @param int $imageId
+     * @return string
+     */
+    private static function buildImageUrl($link, string $rewrite, int $imageId): string
+    {
+        $extension = 'jpg';
+        $configured = Configuration::get('PS_IMAGE_FORMAT');
+        if (is_string($configured) && $configured !== '') {
+            $candidate = strtolower(trim(explode(',', $configured)[0]));
+            if (in_array($candidate, array('jpg', 'jpeg', 'png', 'webp', 'avif'), true)) {
+                $extension = $candidate === 'jpeg' ? 'jpg' : $candidate;
+            }
+        }
+
+        try {
+            $method = new ReflectionMethod($link, 'getImageLink');
+            if ($method->getNumberOfParameters() >= 4) {
+                $url = $link->getImageLink($rewrite, $imageId, 'large_default', $extension);
+            } else {
+                $url = $link->getImageLink($rewrite, $imageId, 'large_default');
+            }
+        } catch (ReflectionException $e) {
+            $url = $link->getImageLink($rewrite, $imageId, 'large_default');
+        }
+
+        return self::absoluteUrl((string) $url);
+    }
+
+    /**
+     * @param string $url
+     * @return string
+     */
+    private static function absoluteUrl(string $url): string
+    {
+        if ($url === '' || preg_match('#^https?://#i', $url)) {
+            return $url;
+        }
+
+        if (strpos($url, '//') === 0) {
+            return 'https:' . $url;
+        }
+
+        $base = '';
+        if (method_exists('Tools', 'getShopDomainSsl')) {
+            $base = (string) Tools::getShopDomainSsl(true);
+        }
+
+        if ($base === '') {
+            return $url;
+        }
+
+        return rtrim($base, '/') . '/' . ltrim($url, '/');
     }
 
     /**

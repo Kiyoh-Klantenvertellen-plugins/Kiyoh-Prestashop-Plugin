@@ -237,7 +237,7 @@ class KiyohApiClient extends KiyohApi
      * @return array Response data
      * @throws Exception on HTTP errors
      */
-    private function makeRequest(string $method, string $url, array $data = null): array
+    private function makeRequest(string $method, string $url, ?array $data = null): array
     {
         $ch = curl_init();
         
@@ -248,7 +248,7 @@ class KiyohApiClient extends KiyohApi
             CURLOPT_TIMEOUT => 30,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_HTTPHEADER => $this->getHeaders(),
-            CURLOPT_USERAGENT => 'PrestaShop-Kiyoh-Module/1.0.0',
+            CURLOPT_USERAGENT => 'PrestaShop-Kiyoh-Module/1.2.0',
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
         ]);
