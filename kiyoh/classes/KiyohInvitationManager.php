@@ -94,7 +94,7 @@ class KiyohInvitationManager
                 'api_response' => $apiResponse
             ];
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             // Record failed invitation
             if (isset($invitationData)) {
                 $this->recordInvitation($order, $invitationData, 'failed', ['error' => $e->getMessage()]);
@@ -203,7 +203,7 @@ class KiyohInvitationManager
                 $this->logError('handleOrderStatusUpdate', $result['message'], $orderId);
             }
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             $this->logError('handleOrderStatusUpdate', $e->getMessage(), $orderId ?? 0);
         }
     }
@@ -418,7 +418,9 @@ class KiyohInvitationManager
      */
     private function syncProductsBeforeInvitation(Order $order, array $productCodes): void
     {
-        $syncEnabled = Configuration::get('KIYOH_PRODUCT_SYNC_ENABLED');
+        // There is no KIYOH_PRODUCT_SYNC_ENABLED key. Auto sync is the switch
+        // the configuration page actually stores.
+        $syncEnabled = Configuration::get('KIYOH_AUTO_SYNC');
         if (!$syncEnabled) {
             return;
         }

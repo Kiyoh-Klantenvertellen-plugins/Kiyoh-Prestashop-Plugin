@@ -286,7 +286,7 @@ class Kiyoh extends Module
 
             $syncManager = new KiyohProductSyncManager();
             $syncManager->handleProductUpdate($productId);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             PrestaShopLogger::addLog(
                 'Kiyoh: Product save hook error: ' . $e->getMessage(),
                 3,
@@ -317,7 +317,7 @@ class Kiyoh extends Module
 
             $syncManager = new KiyohProductSyncManager();
             $syncManager->handleProductCreation($productId);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             PrestaShopLogger::addLog(
                 'Kiyoh: Product add hook error: ' . $e->getMessage(),
                 3,
@@ -343,7 +343,7 @@ class Kiyoh extends Module
             
             $invitationManager = new KiyohInvitationManager();
             $invitationManager->handleOrderStatusUpdate($params);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             PrestaShopLogger::addLog(
                 'Kiyoh: Order status update hook error: ' . $e->getMessage(),
                 3,
@@ -821,7 +821,7 @@ class Kiyoh extends Module
         $helper->module = $this;
         $helper->name_controller = $this->name;
         $helper->token = Tools::getAdminTokenLite('AdminModules');
-        $helper->currentIndex = AdminController::$currentIndex . '&configure=' . $this->name;
+        $helper->currentIndex = $this->getConfigureFormIndex();
         $helper->default_form_language = $default_lang;
         $helper->allow_employee_form_lang = $default_lang;
         $helper->title = $this->displayName;
@@ -861,6 +861,44 @@ class Kiyoh extends Module
         $helper->fields_value['KIYOH_FALLBACK_LANGUAGE'] = Configuration::get('KIYOH_FALLBACK_LANGUAGE');
 
         return $helper->generateForm($fields_form);
+    }
+
+    /**
+     * Absolute action for the configuration form.
+     *
+     * PrestaShop 9 renders this page at
+     * /index.php/improve/modules/manage/action/configure/{module}. HelperForm's
+     * default action is the relative "index.php?controller=AdminModules", which
+     * the browser resolves against that path and posts to the wrong URL, so
+     * Save never reaches this module. PrestaShop 8.2 redirects that route to
+     * the legacy controller, and 1.7 never uses it, so those requests keep
+     * AdminController::$currentIndex.
+     *
+     * @return string
+     */
+    private function getConfigureFormIndex()
+    {
+        $legacy = AdminController::$currentIndex . '&configure=' . $this->name;
+        $requestUri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        $marker = '/configure/' . $this->name;
+        if ($requestUri === '' || strpos($requestUri, $marker) === false) {
+            return $legacy;
+        }
+
+        $path = strtok($requestUri, '?');
+        if (!is_string($path) || $path === '') {
+            return $legacy;
+        }
+
+        $host = Tools::getHttpHost(false);
+        if (!is_string($host) || $host === '') {
+            return $legacy;
+        }
+
+        $scheme = Tools::usingSecureMode() ? 'https://' : 'http://';
+
+        // HelperForm appends "&token=", so the action must already have a query.
+        return $scheme . $host . $path . '?configure=' . $this->name;
     }
 
     /**

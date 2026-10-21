@@ -93,7 +93,7 @@ class KiyohProductSyncManager
             $this->logInfo('Product synced successfully', $productId);
 
             return true;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             $this->logError('Product sync failed: ' . $e->getMessage(), $productId);
             $this->updateSyncStatus($productId, 'error', $e->getMessage());
             return false;
