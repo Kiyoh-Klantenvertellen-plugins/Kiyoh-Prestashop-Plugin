@@ -26,6 +26,9 @@ class KiyohProductSyncManager
     /** @var array Product sync configuration */
     private $config;
 
+    /** @var int|null Last HTTP status from a review-platform call in this run */
+    private $lastObservedHttpStatus = null;
+
     /**
      * Constructor
      *
@@ -55,10 +58,12 @@ class KiyohProductSyncManager
      * Sync a single product to the platform
      *
      * @param int $productId Product ID
+     * @param bool $reportHealth Post a Kiyoh Mobile health report when finished
      * @return bool Success status
      */
-    public function syncSingleProduct(int $productId): bool
+    public function syncSingleProduct(int $productId, bool $reportHealth = true): bool
     {
+        $apiAttempted = false;
         try {
             // Check if product should be excluded
             if ($this->isProductExcluded($productId)) {
@@ -70,6 +75,7 @@ class KiyohProductSyncManager
             $product = new Product($productId);
             if (!Validate::isLoadedObject($product)) {
                 $this->logError('Product not found', $productId);
+                $this->reportProductHealth(false, 'Product not found', null, $reportHealth);
                 return false;
             }
 
@@ -79,23 +85,35 @@ class KiyohProductSyncManager
             // Validate product data
             $errors = $productData->validate();
             if (!empty($errors)) {
-                $this->logError('Product validation failed: ' . implode(', ', $errors), $productId);
-                $this->updateSyncStatus($productId, 'error', implode(', ', $errors));
+                $message = implode(', ', $errors);
+                $this->logError('Product validation failed: ' . $message, $productId);
+                $this->updateSyncStatus($productId, 'error', $message);
+                $this->reportProductHealth(false, $message, null, $reportHealth);
                 return false;
             }
 
             // Send to API
             $apiData = $productData->toApiArray();
-            $response = $this->getApiClient()->syncProduct($apiData);
+            $client = $this->getApiClient();
+            $apiAttempted = true;
+            $client->syncProduct($apiData);
+            $this->rememberHttpStatus($client->getLastHttpStatus());
 
             // Update sync status
             $this->updateSyncStatus($productId, 'synced');
             $this->logInfo('Product synced successfully', $productId);
+            $this->reportProductHealth(true, null, $this->lastObservedHttpStatus, $reportHealth);
 
             return true;
         } catch (Throwable $e) {
             $this->logError('Product sync failed: ' . $e->getMessage(), $productId);
             $this->updateSyncStatus($productId, 'error', $e->getMessage());
+            $status = null;
+            if ($apiAttempted && $this->apiClient) {
+                $status = $this->apiClient->getLastHttpStatus();
+                $this->rememberHttpStatus($status);
+            }
+            $this->reportProductHealth(false, $e->getMessage(), $status, $reportHealth);
             return false;
         }
     }
@@ -215,6 +233,8 @@ class KiyohProductSyncManager
             $results['errors'][] = 'Bulk sync error: ' . $e->getMessage();
         }
 
+        $this->reportBulkHealth($results);
+
         return $results;
     }
 
@@ -238,7 +258,9 @@ class KiyohProductSyncManager
             $this->logInfo('Applying 3-second rate limit delay for bulk upload batch');
             sleep(3);
 
-            $response = $this->getApiClient()->syncProductBulk($bulkData);
+            $client = $this->getApiClient();
+            $client->syncProductBulk($bulkData);
+            $this->rememberHttpStatus($client->getLastHttpStatus());
 
             // Mark all products as synced
             foreach ($productIds as $productId) {
@@ -246,6 +268,9 @@ class KiyohProductSyncManager
                 $result['synced']++;
             }
         } catch (Exception $e) {
+            if ($this->apiClient) {
+                $this->rememberHttpStatus($this->apiClient->getLastHttpStatus());
+            }
             // Mark all products as failed
             foreach ($productIds as $productId) {
                 $this->updateSyncStatus($productId, 'error', $e->getMessage());
@@ -658,11 +683,20 @@ class KiyohProductSyncManager
 
         foreach ($failedSyncs as $sync) {
             $productId = (int)$sync['id_product'];
-            if ($this->syncSingleProduct($productId)) {
+            if ($this->syncSingleProduct($productId, false)) {
                 $results['synced']++;
             } else {
                 $results['failed']++;
             }
+        }
+
+        if ($results['total'] > 0) {
+            $this->reportProductHealth(
+                $results['failed'] === 0 && $results['synced'] > 0,
+                $results['failed'] > 0 ? 'Product sync failed' : null,
+                $this->lastObservedHttpStatus,
+                true
+            );
         }
 
         return $results;
@@ -708,6 +742,78 @@ class KiyohProductSyncManager
         $stats['excluded'] = count($this->getExcludedProducts());
 
         return $stats;
+    }
+
+    /**
+     * Keep the strongest authentication failure seen in this run.
+     *
+     * @param int|null $status
+     * @return void
+     */
+    private function rememberHttpStatus(?int $status): void
+    {
+        if ($status === null || $status <= 0) {
+            return;
+        }
+        if ($this->lastObservedHttpStatus === 401 || $this->lastObservedHttpStatus === 403) {
+            return;
+        }
+        $this->lastObservedHttpStatus = $status;
+    }
+
+    /**
+     * One health report for a bulk or retry run that talked to the review API.
+     *
+     * @param array $results
+     * @return void
+     */
+    private function reportBulkHealth(array $results): void
+    {
+        $synced = (int) ($results['synced'] ?? 0);
+        $failed = (int) ($results['failed'] ?? 0);
+        if (($synced + $failed) <= 0) {
+            return;
+        }
+
+        $error = null;
+        if ($failed > 0 && !empty($results['errors']) && is_array($results['errors'])) {
+            $error = (string) $results['errors'][count($results['errors']) - 1];
+        }
+        $this->reportProductHealth($failed === 0, $error, $this->lastObservedHttpStatus, true);
+    }
+
+    /**
+     * Post product-sync health. Never changes the sync result.
+     *
+     * @param bool $ok
+     * @param string|null $errorMessage
+     * @param int|null $httpStatus
+     * @param bool $enabled
+     * @return void
+     */
+    private function reportProductHealth(bool $ok, ?string $errorMessage, ?int $httpStatus, bool $enabled): void
+    {
+        if (!$enabled) {
+            return;
+        }
+
+        try {
+            require_once dirname(__FILE__) . '/KiyohMobileHealthReporter.php';
+            $idShop = 0;
+            if (class_exists('Context')) {
+                $context = Context::getContext();
+                if ($context && isset($context->shop) && $context->shop) {
+                    $idShop = (int) $context->shop->id;
+                }
+            }
+            KiyohMobileHealthReporter::noteProductSync($idShop, $ok, $errorMessage, $httpStatus);
+        } catch (Throwable $e) {
+            try {
+                $this->logError('health report failed: ' . $e->getMessage());
+            } catch (Throwable $ignored) {
+                // Health reporting must not change the sync result.
+            }
+        }
     }
 
     /**
