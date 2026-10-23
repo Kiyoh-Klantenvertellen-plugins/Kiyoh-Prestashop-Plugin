@@ -245,7 +245,7 @@ Enable PrestaShop debug mode to see detailed information about module operations
 
 ## About This Module
 
-**Version**: 1.2.0  
+**Version**: 1.3.0  
 **Compatibility**: PrestaShop 1.7.0.0–9.2.0  
 **PHP**: 8.2 or higher  
 **Developer**: Kiyoh  
@@ -260,6 +260,53 @@ For technical support:
 3. Contact your review platform support team
 4. Consult module documentation
 
+## Kiyoh Mobile health
+
+The module reports shop health to Kiyoh Mobile so the plugins page can show whether this store is connected. A report never blocks checkout, order updates, or product saves. Requests time out quickly, and a `429` response is honored instead of retried in the same request.
+
+### Where reports are sent
+
+In **General Settings**, **Kiyoh Mobile URL(s)** is a comma-separated list of Kiyoh Mobile base URLs. The default is `https://kiyoh-mobile.com`. The module posts to `{url}/api/integrations/health` for each URL.
+
+To show the shop on Kiyoh Mobile staging as well, set the field to:
+
+```
+https://kiyoh-mobile.com,https://kiyohmobileui-staging.up.railway.app
+```
+
+Each request sends:
+
+- `X-Publication-Api-Token`: the API key already saved on this module
+- `X-Location-Id`: the Location ID already saved on this module
+- `platform`: `prestashop`
+- `shopId`: the shop domain (the virtual shop path is included for multistore shops that share a domain)
+- `pluginVersion`: the module version
+- `connection`, `invites`, and `productSync`
+
+`productSync` can include up to 500 product codes from products that synced successfully. Codes are not stored in the health record; Kiyoh Mobile marks them as imported for Smart Widgets.
+
+### When a report is sent
+
+- Saving the module configuration. Changing the Location ID or API key also checks the review-platform connection before the report is sent. Other setting changes send the report without that extra check.
+- Testing the API connection
+- A review invitation is sent or fails
+- A product sync finishes (including bulk sync)
+- Once a day from the health cron URL, or from the PrestaShop cronjobs module
+
+The daily run sends again only when the payload changed, or when the last accepted report for that URL is at least 24 hours old. Kiyoh Mobile treats a shop as stale when it has not heard from the plugin for more than 48 hours.
+
+### Daily cron
+
+Open the module configuration page and copy **Daily health cron**. The link looks like:
+
+```
+https://your-shop.example/module/kiyoh/cron?token=YOUR_TOKEN
+```
+
+Call that URL once a day. The token is created for this shop and is required. A wrong token gets `403` and does not report anything.
+
+In a multistore, one call reports every active shop, using that shop's own domain and saved credentials.
+
 ## Advanced Configuration
 
 ### Multisite Support
@@ -269,6 +316,16 @@ The module is compatible with PrestaShop multi-store installations. Configure ea
 ### WPML/Polylang Compatibility
 
 The module works with multilingual plugins and will attempt to detect customer language for invitations.
+
+## Developers
+
+Payload rules for the health report (URL list, shop id, product-code limit, 24-hour resend, and HTTP 429 handling) are covered by:
+
+```
+php tests/KiyohMobileHealthTest.php
+```
+
+The test does not need a PrestaShop installation.
 
 ## Security
 

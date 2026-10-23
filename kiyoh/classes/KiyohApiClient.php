@@ -26,6 +26,9 @@ class KiyohApiClient extends KiyohApi
     
     /** @var string API Key */
     private $apiKey;
+
+    /** @var int|null HTTP status of the most recent request */
+    private $lastHttpStatus = null;
     
     /** @var array Platform base URLs */
     private static $baseUrls = [
@@ -50,6 +53,16 @@ class KiyohApiClient extends KiyohApi
         $this->platform = $platform;
         $this->locationId = $locationId;
         $this->apiKey = $apiKey;
+    }
+
+    /**
+     * HTTP status from the last request, or null when the call never reached a server.
+     *
+     * @return int|null
+     */
+    public function getLastHttpStatus(): ?int
+    {
+        return $this->lastHttpStatus;
     }
 
     /**
@@ -239,6 +252,7 @@ class KiyohApiClient extends KiyohApi
      */
     private function makeRequest(string $method, string $url, ?array $data = null): array
     {
+        $this->lastHttpStatus = null;
         $ch = curl_init();
         
         // Basic cURL options
@@ -248,7 +262,7 @@ class KiyohApiClient extends KiyohApi
             CURLOPT_TIMEOUT => 30,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_HTTPHEADER => $this->getHeaders(),
-            CURLOPT_USERAGENT => 'PrestaShop-Kiyoh-Module/1.2.0',
+            CURLOPT_USERAGENT => 'PrestaShop-Kiyoh-Module/1.3.0',
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
         ]);
@@ -279,8 +293,11 @@ class KiyohApiClient extends KiyohApi
         }
         
         $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
+        if ($httpCode > 0) {
+            $this->lastHttpStatus = $httpCode;
+        }
         
         curl_close($ch);
         

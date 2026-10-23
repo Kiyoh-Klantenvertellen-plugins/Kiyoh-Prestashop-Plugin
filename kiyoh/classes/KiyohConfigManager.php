@@ -22,6 +22,7 @@ class KiyohConfigManager
         'KIYOH_PLATFORM' => 'general.platform',
         'KIYOH_LOCATION_ID' => 'general.location_id',
         'KIYOH_API_KEY' => 'general.api_key',
+        'KIYOH_MOBILE_URLS' => 'general.mobile_urls',
         'KIYOH_AUTO_SYNC' => 'product_sync.auto_sync',
         'KIYOH_EXCLUDED_TYPES' => 'product_sync.excluded_types',
         'KIYOH_EXCLUDED_CODES' => 'product_sync.excluded_codes',
