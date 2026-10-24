@@ -30,7 +30,7 @@ class Kiyoh extends Module
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.3.0';
+        $this->version = '1.4.0';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array(
@@ -112,6 +112,8 @@ class Kiyoh extends Module
      */
     public function uninstall()
     {
+        $this->revokeConnectOnUninstall();
+
         return parent::uninstall() &&
             $this->uninstallDb() &&
             $this->uninstallConfiguration() &&
@@ -235,6 +237,10 @@ class Kiyoh extends Module
 
         require_once dirname(__FILE__) . '/classes/KiyohMobileHealthReporter.php';
         KiyohMobileHealthReporter::ensureCronToken();
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        if (!KiyohConnectService::ensureEncryptionKey()) {
+            return false;
+        }
 
         return true;
     }
@@ -264,6 +270,9 @@ class Kiyoh extends Module
             'KIYOH_LANGUAGE_AUTO',
             'KIYOH_FALLBACK_LANGUAGE',
         );
+
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $config = array_merge($config, KiyohConnectService::configurationKeys());
 
         foreach ($config as $key) {
             if (!Configuration::deleteByName($key)) {
@@ -396,12 +405,26 @@ class Kiyoh extends Module
         if (!$this->isRegisteredInHook('actionCronJob')) {
             $this->registerHook('actionCronJob');
         }
-        
+
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $flash = KiyohConnectService::pullFlash();
+        if ($flash['code'] !== '') {
+            $output .= $this->renderConnectResult($flash['code'], null, $flash['retryAfter']);
+        }
+
+        if (Tools::isSubmit('kiyoh_connect_start')) {
+            $output .= $this->startConnect();
+        }
+
+        if (Tools::isSubmit('kiyoh_connect_disconnect')) {
+            $output .= $this->disconnectConnect();
+        }
+
         // Handle bulk sync request
         if (Tools::isSubmit('bulk_sync')) {
             $output .= $this->processBulkSync();
         }
-        
+
         return $output . $this->getBasicConfigurationForm();
     }
 
@@ -462,7 +485,7 @@ class Kiyoh extends Module
             $output .= $this->testApiConnection();
         }
 
-        return $output . $this->displayForm();
+        return $output . $this->renderConnectPanel() . $this->displayForm();
     }
 
     /**
@@ -534,6 +557,10 @@ class Kiyoh extends Module
         Configuration::updateValue('KIYOH_EXCLUDED_GROUPS', is_array($excludedGroups) ? implode(',', $excludedGroups) : '');
         Configuration::updateValue('KIYOH_LANGUAGE_AUTO', (int)Tools::getValue('KIYOH_LANGUAGE_AUTO'));
         Configuration::updateValue('KIYOH_FALLBACK_LANGUAGE', strval(Tools::getValue('KIYOH_FALLBACK_LANGUAGE')));
+        if ($credentialsChanged) {
+            require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+            KiyohConnectService::markManualCredentials();
+        }
 
         $output = $this->displayConfirmation($this->l('Settings updated'));
         $connectionError = $this->reportHealthAfterConfigSave($credentialsChanged);
@@ -714,7 +741,7 @@ class Kiyoh extends Module
                     'name' => 'KIYOH_LOCATION_ID',
                     'size' => 20,
                     'required' => true,
-                    'desc' => $this->l('Your Kiyoh/Klantenvertellen Location ID'),
+                    'desc' => $this->l('Filled in when you connect, or type the Location ID yourself. Manual values stay available for existing installs.'),
                 ),
                 array(
                     'type' => 'text',
@@ -722,7 +749,7 @@ class Kiyoh extends Module
                     'name' => 'KIYOH_API_KEY',
                     'size' => 50,
                     'required' => true,
-                    'desc' => $this->l('Your Kiyoh/Klantenvertellen API Key (X-Publication-Api-Token)'),
+                    'desc' => $this->l('Filled in from Connect (invite API key), or type an API key yourself. This is the fallback for existing installs.'),
                 ),
                 array(
                     'type' => 'text',
@@ -1033,6 +1060,255 @@ class Kiyoh extends Module
 
         // HelperForm appends "&token=", so the action must already have a query.
         return $scheme . $host . $path . '?configure=' . $this->name;
+    }
+
+    /**
+     * Ask Connect to drop this shop's registration before local data is deleted.
+     *
+     * @return void
+     */
+    private function revokeConnectOnUninstall()
+    {
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+            KiyohConnectService::revokeBeforeUninstall();
+        } catch (Throwable $e) {
+            PrestaShopLogger::addLog('Kiyoh Connect: uninstall revoke failed', 2, null, 'Kiyoh', null, true);
+        }
+    }
+
+    /**
+     * Employee session plus the AdminModules token. Both are required.
+     *
+     * @return bool
+     */
+    private function isAdminRequestAuthentic()
+    {
+        $employeeId = 0;
+        if (isset($this->context->employee) && $this->context->employee) {
+            $employeeId = (int) $this->context->employee->id;
+        }
+        if ($employeeId <= 0) {
+            return false;
+        }
+        $provided = Tools::getValue('token');
+        if (!is_string($provided) || $provided === '') {
+            return false;
+        }
+        $expected = Tools::getAdminTokenLite('AdminModules');
+
+        return is_string($expected) && $expected !== '' && hash_equals($expected, $provided);
+    }
+
+    /**
+     * @return string
+     */
+    private function startConnect()
+    {
+        if (!$this->isAdminRequestAuthentic()) {
+            return $this->displayError($this->l('The admin token is missing or expired. Reload this page and try again.'));
+        }
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $platform = Configuration::get('KIYOH_PLATFORM');
+        if (!is_string($platform)) {
+            $platform = '';
+        }
+        $result = KiyohConnectService::begin($platform, $this->absoluteAdminReturn());
+        $issuer = KiyohConnect::issuerForPlatform($platform);
+        $authorizeUrl = isset($result['authorizeUrl']) && is_string($result['authorizeUrl']) ? $result['authorizeUrl'] : '';
+        if (empty($result['ok']) || $issuer === null || strpos($authorizeUrl, $issuer . '/authorize?') !== 0) {
+            return $this->renderConnectResult(
+                isset($result['code']) && is_string($result['code']) ? $result['code'] : 'network',
+                isset($result['detail']) && is_string($result['detail']) ? $result['detail'] : null,
+                isset($result['retryAfter']) ? (int) $result['retryAfter'] : null
+            );
+        }
+        header('Referrer-Policy: no-referrer');
+        header('Cache-Control: no-store');
+        Tools::redirect($authorizeUrl);
+
+        return '';
+    }
+
+    /**
+     * @return string
+     */
+    private function disconnectConnect()
+    {
+        if (!$this->isAdminRequestAuthentic()) {
+            return $this->displayError($this->l('The admin token is missing or expired. Reload this page and try again.'));
+        }
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $result = KiyohConnectService::disconnect();
+
+        return $this->renderConnectResult(
+            isset($result['code']) && is_string($result['code']) ? $result['code'] : 'network',
+            isset($result['detail']) && is_string($result['detail']) ? $result['detail'] : null,
+            isset($result['retryAfter']) ? (int) $result['retryAfter'] : null
+        );
+    }
+
+    /**
+     * @param string $code
+     * @param string|null $detail
+     * @param int|null $retryAfter
+     * @return string
+     */
+    private function renderConnectResult($code, $detail, $retryAfter)
+    {
+        $message = $this->connectMessage($code, $retryAfter);
+        if (is_string($detail) && preg_match('/^[a-z0-9_]{1,40}$/', $detail)) {
+            $message .= ' (' . $detail . ')';
+        }
+        if ($code === 'connected' || $code === 'disconnected') {
+            return $this->displayConfirmation($message);
+        }
+
+        return $this->displayError($message);
+    }
+
+    /**
+     * @param string $code
+     * @param int|null $retryAfter
+     * @return string
+     */
+    private function connectMessage($code, $retryAfter)
+    {
+        switch ($code) {
+            case 'connected':
+                return $this->l('Connected. Location ID and API key were saved for this shop.');
+            case 'disconnected':
+                return $this->l('Disconnected. The Kiyoh-Connect session was revoked.');
+            case 'secret_missing':
+                return $this->l('Kiyoh-Connect signing is not configured on this server. Set KIYOH_CONNECT_HMAC_KEY and KIYOH_CONNECT_CLIENT_SECRET in the server environment (not in the module zip). Manual Location ID and API key still work.');
+            case 'shop_context':
+                return $this->l('Select one shop in the multistore header, then connect that shop.');
+            case 'https_required':
+                return $this->l('This shop needs a public HTTPS domain before it can use Kiyoh-Connect.');
+            case 'platform':
+                return $this->l('Save the platform as Kiyoh.com or Klantenvertellen.nl, then connect.');
+            case 'admin_return':
+                return $this->l('Open this configuration page over HTTPS on the shop domain, then connect.');
+            case 'register_failed':
+                return $this->l('Kiyoh-Connect rejected the shop registration.');
+            case 'access_denied':
+                return $this->l('Sign-in was cancelled.');
+            case 'state_mismatch':
+            case 'state_expired':
+            case 'no_pending':
+                return $this->l('This sign-in session is no longer valid. Start Connect again.');
+            case 'token_failed':
+                return $this->l('Kiyoh-Connect did not return a session. Start Connect again.');
+            case 'credentials_failed':
+                return $this->l('Signed in, but the location credentials could not be read. Use Disconnect, then try again.');
+            case 'tenant_mismatch':
+                return $this->l('The account tenant does not match the platform selected for this shop. No credentials were saved.');
+            case 'encryption_failed':
+                return $this->l('The Connect session could not be encrypted, so nothing was saved.');
+            case 'revoke_failed':
+                return $this->l('Kiyoh-Connect did not revoke the session. Local credentials were left in place.');
+            case 'rate_limited':
+                $seconds = (int) $retryAfter;
+                if ($seconds < 1) {
+                    $seconds = 1;
+                }
+
+                return sprintf($this->l('Kiyoh-Connect asked this shop to wait %d seconds before trying again.'), $seconds);
+            case 'network':
+                return $this->l('Kiyoh-Connect could not be reached.');
+            default:
+                return $this->l('Kiyoh-Connect sign-in could not be completed.');
+        }
+    }
+
+    /**
+     * Connect controls sit above the manual settings. The saved platform picks the issuer.
+     *
+     * @return string
+     */
+    private function renderConnectPanel()
+    {
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $status = KiyohConnectService::status();
+        $action = htmlspecialchars($this->getConfigureFormIndex(), ENT_QUOTES, 'UTF-8');
+        $token = htmlspecialchars((string) Tools::getAdminTokenLite('AdminModules'), ENT_QUOTES, 'UTF-8');
+        $intro = $this->l('Sign in on Kiyoh-Connect. The saved platform chooses the issuer: Kiyoh.com uses connect.kiyoh.com, Klantenvertellen.nl uses connect.klantenvertellen.nl. Save the platform first. The button opens a popup. Manual Location ID and API key below remain the fallback for existing installs.');
+        $html = '<div class="panel"><div class="panel-heading"><i class="icon-signin"></i> '
+            . $this->l('Connect with Kiyoh / Klantenvertellen')
+            . '</div><div class="panel-body"><p>' . $intro . '</p>';
+        if (!$status['configured']) {
+            $html .= '<div class="alert alert-warning">'
+                . $this->l('This server has no KIYOH_CONNECT_HMAC_KEY or KIYOH_CONNECT_CLIENT_SECRET. Those values are not part of the module download. Manual API settings still work.')
+                . '</div>';
+        }
+        if ($status['linked']) {
+            $html .= '<p><strong>' . $this->l('Connected') . '</strong> '
+                . htmlspecialchars($status['locationName'], ENT_QUOTES, 'UTF-8')
+                . ' (' . $this->l('location') . ' '
+                . htmlspecialchars($status['locationId'], ENT_QUOTES, 'UTF-8')
+                . ', ' . $this->l('tenant') . ' '
+                . htmlspecialchars($status['tenantId'], ENT_QUOTES, 'UTF-8')
+                . ')</p>';
+        }
+        $html .= '<p><code>' . htmlspecialchars($status['redirect'] !== '' ? $status['redirect'] : $this->l('Return address is created when you connect.'), ENT_QUOTES, 'UTF-8') . '</code></p>';
+        $html .= '<form method="post" action="' . $action . '" target="kiyoh-connect" onsubmit="window.open(\'about:blank\',\'kiyoh-connect\',\'width=480,height=720,scrollbars=yes\');">'
+            . '<input type="hidden" name="token" value="' . $token . '">'
+            . '<button type="submit" name="kiyoh_connect_start" class="btn btn-primary">'
+            . $this->l('Connect with Kiyoh / Klantenvertellen')
+            . '</button></form>';
+        if ($status['linked'] || $status['hasSession']) {
+            $html .= '<form method="post" action="' . $action . '" style="margin-top:12px">'
+                . '<input type="hidden" name="token" value="' . $token . '">'
+                . '<button type="submit" name="kiyoh_connect_disconnect" class="btn btn-default">'
+                . $this->l('Disconnect')
+                . '</button></form>';
+        }
+        $html .= '</div></div>';
+
+        return $html;
+    }
+
+    /**
+     * HTTPS module-configuration URL on the shop host, including the admin token.
+     *
+     * @return string
+     */
+    private function absoluteAdminReturn()
+    {
+        $index = $this->getConfigureFormIndex();
+        $token = Tools::getAdminTokenLite('AdminModules');
+        if (!is_string($token) || $token === '') {
+            return '';
+        }
+        if (strpos($index, 'token=') === false) {
+            $index .= (strpos($index, '?') === false ? '?' : '&') . 'token=' . rawurlencode($token);
+        }
+        $shopHost = '';
+        if (isset($this->context->shop)) {
+            $ssl = isset($this->context->shop->domain_ssl) ? trim((string) $this->context->shop->domain_ssl) : '';
+            $plain = isset($this->context->shop->domain) ? trim((string) $this->context->shop->domain) : '';
+            $shopHost = $ssl !== '' ? $ssl : $plain;
+        }
+        $requestHost = Tools::getHttpHost(false);
+        if (!is_string($requestHost) || $shopHost === '' || strcasecmp($requestHost, $shopHost) !== 0) {
+            return '';
+        }
+        if (!Tools::usingSecureMode()) {
+            return '';
+        }
+        if (preg_match('#^https://#i', $index)) {
+            return $index;
+        }
+        if (isset($index[0]) && $index[0] === '/') {
+            return 'https://' . $shopHost . $index;
+        }
+        $script = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
+        $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
+        if ($dir === '' || $dir === '.') {
+            $dir = '';
+        }
+
+        return 'https://' . $shopHost . $dir . '/' . ltrim($index, '/');
     }
 
     /**

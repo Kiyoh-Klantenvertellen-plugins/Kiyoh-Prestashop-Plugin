@@ -1,0 +1,7 @@
+{
+  "access_token": "access-token-test",
+  "refresh_token": "refresh-token-test",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "integration:connect"
+}

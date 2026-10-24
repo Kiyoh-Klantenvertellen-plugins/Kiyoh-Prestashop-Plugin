@@ -60,15 +60,18 @@ Keep these credentials handy for the next step.
 
 You can install the module using PrestaShop's built-in module manager. The installation process typically takes 2-5 minutes.
 
+The install file is `kiyoh-<version>.zip`. It is built by GitHub Actions (the `kiyoh-module` artifact on each run, and the file attached to a GitHub Release). It is not stored in the git repository.
+
 **Installation steps:**
-1. Log into your PrestaShop admin panel
-2. Go to **Modules > Module Manager**
-3. Click **Upload a module** at the top of the page
-4. Click **select file** and choose the `kiyoh.zip` file
-5. Click **Upload this module**
-6. Once uploaded, find "Kiyoh Reviews" in the module list
-7. Click **Install**
-8. Verify installation success (module will show in the installed modules list)
+1. Download `kiyoh-<version>.zip` from the GitHub Release, or from the Actions artifact on the pull request
+2. Log into your PrestaShop admin panel
+3. Go to **Modules > Module Manager**
+4. Click **Upload a module** at the top of the page
+5. Click **select file** and choose that zip
+6. Click **Upload this module**
+7. Once uploaded, find "Kiyoh Reviews" in the module list
+8. Click **Install**
+9. Verify installation success (module will show in the installed modules list)
 
 **Alternative method (for technical users):**
 - Upload the module files to `/modules/kiyoh/` directory via FTP
@@ -76,7 +79,32 @@ You can install the module using PrestaShop's built-in module manager. The insta
 
 Once installed, you can configure the module by clicking **Configure** next to the module name.
 
-### Step 3: Configure the Module
+Developers can build the same zip locally:
+
+```
+bash scripts/build-release.sh
+```
+
+That writes `dist/kiyoh-<version>.zip`.
+
+### Step 3: Connect, or enter API credentials
+
+**Connect with Kiyoh / Klantenvertellen** is on the configuration page, above the manual fields. Save the platform first. Kiyoh.com opens `https://connect.kiyoh.com`. Klantenvertellen.nl opens `https://connect.klantenvertellen.nl`. The button opens a popup. Sign in, complete 2FA if the account has it, and pick a location. The module then stores that location's ID and invite API key.
+
+The shop must be HTTPS, with friendly URLs on. The return address is `https://{shop-host}/module/kiyoh/oauth`. In a multistore, select one shop before connecting. Each shop registers its own return address.
+
+Connect signing is not inside the module download. On the shop server, set both of these (environment wins over a PHP constant):
+
+```
+KIYOH_CONNECT_HMAC_KEY
+KIYOH_CONNECT_CLIENT_SECRET
+```
+
+A constant of the same name in `config/defines_custom.inc.php` also works. Do not put the values in the module zip. If they are missing, the page says so and the manual fields still work.
+
+**Manual fallback:** Location ID and API key stay on the form. Existing installs keep working without Connect. Saving a different Location ID or API key by hand leaves the Connect session in place until you click **Disconnect**. Disconnect revokes the Connect session. When the saved credentials came from Connect, Disconnect also clears them.
+
+### Step 4: Configure the rest of the module
 
 1. Log into your PrestaShop admin panel
 2. Go to **Modules > Module Manager**
@@ -245,7 +273,7 @@ Enable PrestaShop debug mode to see detailed information about module operations
 
 ## About This Module
 
-**Version**: 1.3.0  
+**Version**: 1.4.0  
 **Compatibility**: PrestaShop 1.7.0.0–9.2.0  
 **PHP**: 8.2 or higher  
 **Developer**: Kiyoh  
@@ -317,19 +345,47 @@ The module is compatible with PrestaShop multi-store installations. Configure ea
 
 The module works with multilingual plugins and will attempt to detect customer language for invitations.
 
-## Developers
+## Permissions
 
-Payload rules for the health report (URL list, shop id, product-code limit, 24-hour resend, and HTTP 429 handling) are covered by:
+- **Configure the module.** The employee must be logged into the back office. Connect and Disconnect also check the `AdminModules` token.
+- **HTTPS to Kiyoh-Connect.** `connect.kiyoh.com` (Kiyoh, tenant 98) and `connect.klantenvertellen.nl` (Klantenvertellen, tenant 99). Scope `integration:connect` only, so the module can read one location's invite key.
+- **HTTPS to the review platform and to each Kiyoh Mobile URL** the merchant saved. Health reports use the stored API key and Location ID.
+- **Public return address** `https://{shop-host}/module/kiyoh/oauth`. Connect redirects the browser here. The request is accepted only when `state` matches the sign-in that an employee started for this shop.
+- **Daily health URL** `/module/kiyoh/cron`. It requires the module cron token. A wrong token gets `403`.
+- Friendly URLs must be enabled, or the return address will not reach the module.
+
+## Data stored
+
+Kept until you uninstall the module:
+
+- Location ID, API key, platform, invitation and product-sync settings, and the Kiyoh Mobile URL list
+- Product sync rows (`ps_kiyoh_product_sync`) and invitation rows (`ps_kiyoh_invitations`)
+- Health report state and the cron token
+- After Connect: shop origin, return address, issuer, location name, tenant id, an encrypted refresh token, and a module-generated encryption key. The PKCE verifier is kept only until the popup returns (at most 15 minutes), and it is encrypted.
+- The HMAC key and the Connect client secret are not stored by the module
+
+There is no export button. The Location ID is visible on the configuration page. Uninstall is how a shop erases this module's data. Orders, customers, and catalog rows are not part of that data.
+
+## Uninstall
+
+Uninstall drops `ps_kiyoh_product_sync` and `ps_kiyoh_invitations`, deletes every configuration key listed above, and asks Kiyoh-Connect to revoke the refresh token (`POST /revoke`) and the shop registration (`POST /shops/revoke`). Remote revoke runs only when the server still has the HMAC key and client secret. Local data is removed either way. PrestaShop orders and customers stay.
+
+## Developers
 
 ```
 php tests/KiyohMobileHealthTest.php
+php tests/KiyohConnectTest.php
+python3 scripts/preflight.py .
+bash scripts/build-release.sh
 ```
 
-The test does not need a PrestaShop installation.
+The PHP tests do not need a PrestaShop installation. `PLUGIN_SPEC.md` is the contract. `CHANGELOG.md` lists what each version changed.
 
 ## Security
 
-- API keys are stored securely in PrestaShop options
-- All user inputs are sanitized and validated
-- AJAX requests include nonce verification
-- User capability checks prevent unauthorized access
+- Connect and Disconnect require a logged-in employee and the back-office token
+- The OAuth `state` is compared with `hash_equals` and can be used once
+- The refresh token is encrypted with AES-256-GCM. The encryption key is generated on the shop and is not the Connect HMAC key
+- The HMAC key and client secret are read from the server environment. They are not in the git repository and not in the zip. A shared secret inside the distributed module would let anyone who downloads the zip sign shop registrations. See the security note in `PLUGIN_SPEC.md`
+- Review API and Connect calls verify TLS. Connect hosts are limited to the two issuers
+- Configuration output is escaped. Health and Connect failures are not written into the order flow

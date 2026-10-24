@@ -262,7 +262,7 @@ class KiyohApiClient extends KiyohApi
             CURLOPT_TIMEOUT => 30,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_HTTPHEADER => $this->getHeaders(),
-            CURLOPT_USERAGENT => 'PrestaShop-Kiyoh-Module/1.3.0',
+            CURLOPT_USERAGENT => 'PrestaShop-Kiyoh-Module/1.4.0',
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
         ]);

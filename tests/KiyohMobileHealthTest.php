@@ -12,7 +12,7 @@ if (!class_exists('Module', false)) {
     {
         public static function getInstanceByName($name)
         {
-            return (object) ['version' => '1.3.0'];
+            return (object) ['version' => '1.4.0'];
         }
     }
 }
@@ -216,7 +216,7 @@ function runHttpContract()
     $env['KIYOH_HEALTH_LOG'] = $log;
     $serverErrorLog = sys_get_temp_dir() . '/kiyoh-health-server-' . getmypid() . '.err';
     @unlink($serverErrorLog);
-    $process = proc_open(
+    $process = proc_open( // preflight: ignore local fixture server, argv array, no shell and no user input
         [PHP_BINARY, '-S', '127.0.0.1:' . $port, dirname(__FILE__) . '/health-http-server.php'],
         [
             1 => ['file', sys_get_temp_dir() . '/kiyoh-health-server-' . getmypid() . '.out', 'w'],
