@@ -93,16 +93,9 @@ That writes `dist/kiyoh-<version>.zip`.
 
 The shop must be HTTPS, with friendly URLs on. The return address is `https://{shop-host}/module/kiyoh/oauth`. In a multistore, select one shop before connecting. Each shop registers its own return address.
 
-Connect signing is not inside the module download. On the shop server, set both of these (environment wins over a PHP constant):
+No shared HMAC key or client secret is required, and none is included in the module. Connect returns a shop credential once. The module stores it encrypted and uses it for later sign-in, refresh, and revoke. Disconnect revokes the session and keeps that credential, so connecting again on the same return address does not need a new secret.
 
-```
-KIYOH_CONNECT_HMAC_KEY
-KIYOH_CONNECT_CLIENT_SECRET
-```
-
-A constant of the same name in `config/defines_custom.inc.php` also works. Do not put the values in the module zip. If they are missing, the page says so and the manual fields still work.
-
-**Manual fallback:** Location ID and API key stay on the form. Existing installs keep working without Connect. Saving a different Location ID or API key by hand leaves the Connect session in place until you click **Disconnect**. Disconnect revokes the Connect session. When the saved credentials came from Connect, Disconnect also clears them.
+**Manual fallback:** Location ID and API key stay on the form. Existing installs keep working without Connect. Saving a different Location ID or API key by hand clears the linked flag and leaves the Connect session in place until you click **Disconnect**. Disconnect revokes the Connect session. When the saved credentials came from Connect, Disconnect also clears the Location ID and API key.
 
 ### Step 4: Configure the rest of the module
 
@@ -361,14 +354,14 @@ Kept until you uninstall the module:
 - Location ID, API key, platform, invitation and product-sync settings, and the Kiyoh Mobile URL list
 - Product sync rows (`ps_kiyoh_product_sync`) and invitation rows (`ps_kiyoh_invitations`)
 - Health report state and the cron token
-- After Connect: shop origin, return address, issuer, location name, tenant id, an encrypted refresh token, and a module-generated encryption key. The PKCE verifier is kept only until the popup returns (at most 15 minutes), and it is encrypted.
-- The HMAC key and the Connect client secret are not stored by the module
+- After Connect: shop origin, return address, issuer, location name, tenant id, an encrypted refresh token, an encrypted per-shop credential, and a module-generated encryption key. The PKCE verifier is kept only until the popup returns (at most 15 minutes), and it is encrypted.
+- No shared HMAC key and no shared client secret are stored. The shop secret is the credential Connect returns once.
 
 There is no export button. The Location ID is visible on the configuration page. Uninstall is how a shop erases this module's data. Orders, customers, and catalog rows are not part of that data.
 
 ## Uninstall
 
-Uninstall drops `ps_kiyoh_product_sync` and `ps_kiyoh_invitations`, deletes every configuration key listed above, and asks Kiyoh-Connect to revoke the refresh token (`POST /revoke`) and the shop registration (`POST /shops/revoke`). Remote revoke runs only when the server still has the HMAC key and client secret. Local data is removed either way. PrestaShop orders and customers stay.
+Uninstall drops `ps_kiyoh_product_sync` and `ps_kiyoh_invitations`, deletes every configuration key listed above (including the shop credential), and asks Kiyoh-Connect to revoke the refresh token (`POST /revoke`) and the shop registration (`POST /shops/revoke`) using the stored shop credential. If that credential is missing, the remote calls are skipped. Local data is removed either way. PrestaShop orders and customers stay.
 
 ## Developers
 
@@ -385,7 +378,7 @@ The PHP tests do not need a PrestaShop installation. `PLUGIN_SPEC.md` is the con
 
 - Connect and Disconnect require a logged-in employee and the back-office token
 - The OAuth `state` is compared with `hash_equals` and can be used once
-- The refresh token is encrypted with AES-256-GCM. The encryption key is generated on the shop and is not the Connect HMAC key
-- The HMAC key and client secret are read from the server environment. They are not in the git repository and not in the zip. A shared secret inside the distributed module would let anyone who downloads the zip sign shop registrations. See the security note in `PLUGIN_SPEC.md`
+- The refresh token and the per-shop credential are encrypted with AES-256-GCM. The encryption key is generated on the shop and stored in the shop database
+- The module does not contain a shared HMAC key or client secret, and the configuration page does not ask for one. See `PLUGIN_SPEC.md`
 - Review API and Connect calls verify TLS. Connect hosts are limited to the two issuers
 - Configuration output is escaped. Health and Connect failures are not written into the order flow

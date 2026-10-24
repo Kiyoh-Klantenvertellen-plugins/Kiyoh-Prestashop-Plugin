@@ -1,6 +1,6 @@
 <?php
 /**
- * Kiyoh-Connect 1.1 request rules. No PrestaShop installation required.
+ * Kiyoh-Connect 1.2 public-client request rules. No PrestaShop installation required.
  *
  * php tests/KiyohConnectTest.php
  */
@@ -53,27 +53,37 @@ same('E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', KiyohConnect::pkceChallenge(
 $state = KiyohConnect::randomState();
 check(preg_match('/^[A-Za-z0-9_-]{43}$/', $state) === 1, 'state is unpadded base64url');
 
-$issuedAt = 1700000000;
-$canonical = KiyohConnect::canonicalString('register', KiyohConnect::CLIENT_ID, $origin, $redirect, $issuedAt);
+same('shop_id', KiyohConnect::FIELDS['shopId'], 'provisional wire name for the shop id');
+same('shop_secret', KiyohConnect::FIELDS['shopSecret'], 'provisional wire name for the shop secret');
+$register = KiyohConnect::registerBody($origin, $redirect);
+same(KiyohConnect::CLIENT_ID, $register[KiyohConnect::wire('clientId')], 'register client id');
+same($origin, $register[KiyohConnect::wire('shopUrl')], 'shop url is the shop origin');
+same($redirect, $register[KiyohConnect::wire('redirectUri')], 'register redirect is the return address');
 same(
-    "v1\nregister\nkiyoh-prestashop\nhttps://shop.example\nhttps://shop.example/module/kiyoh/oauth\n1700000000",
-    $canonical,
-    'register signature text is the LF-joined lines'
+    [KiyohConnect::wire('clientId'), KiyohConnect::wire('shopUrl'), KiyohConnect::wire('redirectUri')],
+    array_keys($register),
+    'register sends only client id, shop url, and redirect'
 );
-$revokeCanonical = KiyohConnect::canonicalString('revoke', KiyohConnect::CLIENT_ID, $origin, $redirect, $issuedAt);
-check($revokeCanonical !== $canonical, 'uninstall uses the revoke action word');
-check(str_starts_with($revokeCanonical, "v1\nrevoke\nkiyoh-prestashop\n"), 'revoke canonical uses the revoke action');
-$hmacKey = 'test-hmac-key';
-$signature = KiyohConnect::sign($canonical, $hmacKey);
-same(KiyohConnect::base64Url(hash_hmac('sha256', $canonical, $hmacKey, true)), $signature, 'signature is unpadded base64url hmac');
-check(!str_contains($signature, '+') && !str_contains($signature, '/') && !str_contains($signature, '='), 'signature has no base64 padding');
-$again = KiyohConnect::shopRequest('register', $origin, $redirect, $issuedAt, $hmacKey);
-$repeat = KiyohConnect::shopRequest('register', $origin, $redirect, $issuedAt, $hmacKey);
-same($again, $repeat, 'the same register input signs the same body');
-check($again['signature'] !== KiyohConnect::shopRequest('register', $origin, $redirect, $issuedAt + 1, $hmacKey)['signature'], 'a new issued_at changes the signature');
-same(KiyohConnect::CLIENT_ID, $again['client_id'], 'register client id');
-same($origin, $again['shop_url'], 'shop_url is the shop origin');
-same($issuedAt, $again['issued_at'], 'issued_at stays an integer');
+same($register, KiyohConnect::registerBody($origin, $redirect), 'the same register input builds the same body');
+$registerJson = json_encode($register);
+check(
+    is_string($registerJson)
+        && !str_contains($registerJson, 'signature')
+        && !str_contains($registerJson, 'issued_at')
+        && !str_contains($registerJson, 'client_secret'),
+    'register has no signature and no shared secret'
+);
+$issued = KiyohConnect::parseShopCredential([
+    KiyohConnect::wire('shopId') => 'shop-1',
+    KiyohConnect::wire('shopSecret') => 'once-value',
+]);
+same('shop-1', is_array($issued) ? $issued['shopId'] : '', 'register response shop id');
+same('once-value', is_array($issued) ? $issued['shopSecret'] : '', 'register response shop secret');
+$repeatCredential = KiyohConnect::parseShopCredential([KiyohConnect::wire('shopId') => 'shop-1']);
+same('shop-1', is_array($repeatCredential) ? $repeatCredential['shopId'] : '', 'repeat register keeps the shop id');
+same(null, is_array($repeatCredential) ? $repeatCredential['shopSecret'] : 'missing', 'repeat register may omit the secret');
+same(null, KiyohConnect::parseShopCredential([KiyohConnect::wire('shopId') => 'shop-1', KiyohConnect::wire('shopSecret') => '']), 'an empty secret is not a stored credential');
+same(null, KiyohConnect::parseShopCredential([KiyohConnect::wire('shopSecret') => 'once-value']), 'a secret without a shop id is rejected');
 
 $authorize = KiyohConnect::authorizeUrl(KiyohConnect::ISSUER_KIYOH, $redirect, 'state-value', KiyohConnect::pkceChallenge($verifier));
 $parts = parse_url($authorize);
@@ -89,19 +99,26 @@ same('S256', $query['code_challenge_method'] ?? '', 'PKCE method');
 same('E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', $query['code_challenge'] ?? '', 'authorize challenge');
 same('state-value', $query['state'] ?? '', 'authorize state');
 
-$sharedClient = 'test-client-secret';
-$form = KiyohConnect::authorizationCodeForm('one-time-code', $verifier, $redirect, $sharedClient);
-same('authorization_code', $form['grant_type'], 'token grant');
-same('kiyoh-prestashop', $form['client_id'], 'token client id');
-same($sharedClient, $form['client_secret'], 'token form carries the client secret');
-same('one-time-code', $form['code'], 'token code');
-same($verifier, $form['code_verifier'], 'token verifier');
-same($redirect, $form['redirect_uri'], 'token redirect_uri matches authorize');
-$refresh = KiyohConnect::refreshForm('refresh-token-test', $sharedClient);
-same('refresh_token', $refresh['grant_type'], 'refresh grant');
-check(!isset($refresh['code']), 'refresh does not resend the authorization code');
-$revoke = KiyohConnect::revokeTokenForm('refresh-token-test', $sharedClient, 'refresh_token');
-same('refresh_token', $revoke['token_type_hint'], 'revoke hints the refresh token');
+$form = KiyohConnect::authorizationCodeForm('one-time-code', $verifier, $redirect, 'shop-1', 'once-value');
+same('authorization_code', $form[KiyohConnect::wire('grantType')], 'token grant');
+same('kiyoh-prestashop', $form[KiyohConnect::wire('clientId')], 'token client id');
+same('shop-1', $form[KiyohConnect::wire('shopId')], 'token form carries the shop id');
+same('once-value', $form[KiyohConnect::wire('shopSecret')], 'token form carries the shop secret');
+same('one-time-code', $form[KiyohConnect::wire('code')], 'token code');
+same($verifier, $form[KiyohConnect::wire('codeVerifier')], 'token verifier');
+same($redirect, $form[KiyohConnect::wire('redirectUri')], 'token redirect_uri matches authorize');
+check(!array_key_exists('client_secret', $form), 'token form has no shared client secret');
+$refresh = KiyohConnect::refreshForm('refresh-token-test', 'shop-1', 'once-value');
+same('refresh_token', $refresh[KiyohConnect::wire('grantType')], 'refresh grant');
+same('once-value', $refresh[KiyohConnect::wire('shopSecret')], 'refresh carries the shop secret');
+check(!isset($refresh[KiyohConnect::wire('code')]), 'refresh does not resend the authorization code');
+$revoke = KiyohConnect::revokeTokenForm('refresh-token-test', 'shop-1', 'once-value', 'refresh_token');
+same('refresh_token', $revoke[KiyohConnect::wire('tokenTypeHint')], 'revoke hints the refresh token');
+same('once-value', $revoke[KiyohConnect::wire('shopSecret')], 'token revoke carries the shop secret');
+$shopRevoke = KiyohConnect::revokeShopBody($origin, $redirect, 'shop-1', 'once-value');
+same($origin, $shopRevoke[KiyohConnect::wire('shopUrl')], 'shop revoke sends the origin');
+same('once-value', $shopRevoke[KiyohConnect::wire('shopSecret')], 'shop revoke carries the shop secret');
+check(!array_key_exists('signature', $shopRevoke), 'shop revoke is not signed');
 
 $tokenJson = json_decode((string) file_get_contents(dirname(__FILE__) . '/fixtures/connect-token.json'), true);
 $credentialsJson = json_decode((string) file_get_contents(dirname(__FILE__) . '/fixtures/connect-credentials.json'), true);
@@ -133,6 +150,13 @@ check(is_string($encrypted) && !str_contains((string) $encrypted, 'refresh-token
 same('refresh-token-test', KiyohConnect::decrypt((string) $encrypted, $key), 'refresh token decrypts');
 same(null, KiyohConnect::decrypt((string) $encrypted, random_bytes(32)), 'wrong key does not decrypt');
 same(null, KiyohConnect::decrypt(substr((string) $encrypted, 0, -2) . 'aa', $key), 'tampered ciphertext does not decrypt');
+$credentialJson = KiyohConnect::encodeShopCredential('shop-1', 'once-value');
+$credentialEncrypted = is_string($credentialJson) ? KiyohConnect::encrypt($credentialJson, $key) : null;
+check(is_string($credentialEncrypted) && !str_contains((string) $credentialEncrypted, 'once-value'), 'shop secret ciphertext hides the secret');
+$credentialPlain = is_string($credentialEncrypted) ? KiyohConnect::decrypt($credentialEncrypted, $key) : null;
+$credential = is_string($credentialPlain) ? KiyohConnect::decodeShopCredential($credentialPlain) : null;
+same('shop-1', is_array($credential) ? $credential['shopId'] : '', 'stored shop id round trip');
+same('once-value', is_array($credential) ? $credential['shopSecret'] : '', 'stored shop secret round trip');
 
 check(KiyohConnect::isSafeAdminReturn('https://shop.example/admin/index.php?controller=AdminModules&configure=kiyoh&token=abc', 'shop.example'), 'admin return on the shop host is allowed');
 check(!KiyohConnect::isSafeAdminReturn('https://evil.example/admin/index.php?configure=kiyoh', 'shop.example'), 'admin return on another host is rejected');
@@ -202,9 +226,9 @@ foreach ($iterator as $file) {
     }
     $modulePhp .= (string) file_get_contents($file->getPathname());
 }
-check(!preg_match('/client_secret\s*=\s*[\'"][^\'"]+[\'"]/', $modulePhp), 'no client secret literal is shipped');
-check(!preg_match('/HMAC_KEY\s*,\s*[\'"][^\'"]+[\'"]/', $modulePhp), 'no hmac key literal is shipped');
-check(!str_contains($modulePhp, 'test-client-secret') && !str_contains($modulePhp, 'test-hmac-key'), 'test secrets are not in the module');
+check(!preg_match('/client_secret/', $modulePhp), 'module does not send or store a shared client secret');
+check(!str_contains($modulePhp, 'hash_hmac') && !str_contains($modulePhp, 'KIYOH_CONNECT_HMAC_KEY'), 'module does not use a shared HMAC key');
+check(!str_contains($modulePhp, 'KIYOH_CONNECT_CLIENT_SECRET'), 'module does not read a shared client secret setting');
 
 runConnectHttpContract();
 
@@ -228,9 +252,10 @@ function runConnectHttpContract()
     if (!is_array($env)) {
         $env = [];
     }
+    $shops = sys_get_temp_dir() . '/kiyoh-connect-shops-' . getmypid() . '.json';
+    @unlink($shops);
     $env['KIYOH_CONNECT_LOG'] = $log;
-    $env['KIYOH_CONNECT_TEST_HMAC'] = 'test-hmac-key';
-    $env['KIYOH_CONNECT_TEST_SECRET'] = 'test-client-secret';
+    $env['KIYOH_CONNECT_SHOPS'] = $shops;
     $env['KIYOH_CONNECT_429'] = '1';
     $env['KIYOH_CONNECT_COUNTER'] = $counter;
     $serverErrorLog = sys_get_temp_dir() . '/kiyoh-connect-server-' . getmypid() . '.err';
@@ -262,27 +287,42 @@ function runConnectHttpContract()
         }
         check($ready, 'connect test server accepts connections');
         $base = 'http://127.0.0.1:' . $port;
-        $issuedAt = time();
         $origin = 'https://shop.example';
         $redirect = 'https://shop.example/module/kiyoh/oauth';
-        $body = KiyohConnect::shopRequest('register', $origin, $redirect, $issuedAt, 'test-hmac-key');
+        $body = KiyohConnect::registerBody($origin, $redirect);
         $registered = KiyohConnect::http('POST', $base . '/shops/register', ['Content-Type: application/json', 'Accept: application/json'], json_encode($body), ['127.0.0.1']);
-        same(204, $registered['status'], 'shop register accepts a valid signature');
-        $bad = $body;
-        $bad['signature'] = 'not-the-signature';
-        $rejected = KiyohConnect::http('POST', $base . '/shops/register', ['Content-Type: application/json'], json_encode($bad), ['127.0.0.1']);
-        same(401, $rejected['status'], 'shop register rejects a bad signature');
-        same('invalid_client', KiyohConnect::safeErrorCode($rejected['body']), 'bad signature error code');
+        same(200, $registered['status'], 'shop register returns a credential');
+        $first = KiyohConnect::parseShopCredential((array) json_decode($registered['body'], true));
+        check(is_array($first) && is_string($first['shopSecret']) && $first['shopSecret'] !== '', 'the first register includes the shop secret');
+        $repeated = KiyohConnect::http('POST', $base . '/shops/register', ['Content-Type: application/json', 'Accept: application/json'], json_encode($body), ['127.0.0.1']);
+        same(200, $repeated['status'], 'register can be repeated');
+        $secondJson = json_decode($repeated['body'], true);
+        $second = is_array($secondJson) ? KiyohConnect::parseShopCredential($secondJson) : null;
+        same(is_array($first) ? $first['shopId'] : '', is_array($second) ? $second['shopId'] : '', 'repeat register keeps the same shop id');
+        same(null, is_array($second) ? $second['shopSecret'] : 'missing', 'the shop secret is not issued again');
+        check(is_array($secondJson) && !array_key_exists(KiyohConnect::wire('shopSecret'), $secondJson), 'the repeat response omits the secret field');
+        $signed = $body;
+        $signed['signature'] = 'not-used';
+        $rejected = KiyohConnect::http('POST', $base . '/shops/register', ['Content-Type: application/json'], json_encode($signed), ['127.0.0.1']);
+        same(400, $rejected['status'], 'shop register rejects a signature field');
 
-        $revokeBody = KiyohConnect::shopRequest('revoke', $origin, $redirect, $issuedAt, 'test-hmac-key');
-        $revokedShop = KiyohConnect::http('POST', $base . '/shops/revoke', ['Content-Type: application/json'], json_encode($revokeBody), ['127.0.0.1']);
-        same(204, $revokedShop['status'], 'shop revoke accepts the revoke signature');
-
-        $form = KiyohConnect::formBody(KiyohConnect::authorizationCodeForm('one-time-code', 'verifier-value', $redirect, 'test-client-secret'));
+        $shopId = is_array($first) ? $first['shopId'] : '';
+        $shopSecret = is_array($first) && is_string($first['shopSecret']) ? $first['shopSecret'] : '';
+        $denied = KiyohConnect::formBody(KiyohConnect::authorizationCodeForm('one-time-code', 'verifier-value', $redirect, $shopId, 'wrong-value'));
+        $deniedResponse = KiyohConnect::http('POST', $base . '/token', ['Content-Type: application/x-www-form-urlencoded'], $denied, ['127.0.0.1']);
+        same(401, $deniedResponse['status'], 'token rejects a wrong shop secret');
+        $form = KiyohConnect::formBody(KiyohConnect::authorizationCodeForm('one-time-code', 'verifier-value', $redirect, $shopId, $shopSecret));
         $tokenResponse = KiyohConnect::http('POST', $base . '/token', ['Content-Type: application/x-www-form-urlencoded', 'Accept: application/json'], $form, ['127.0.0.1']);
-        same(200, $tokenResponse['status'], 'token endpoint accepts the client secret');
+        same(200, $tokenResponse['status'], 'token accepts the shop credential and PKCE fields');
         $token = KiyohConnect::normalizeToken((array) json_decode($tokenResponse['body'], true));
         check(is_array($token), 'token response normalizes');
+
+        $revokeBody = KiyohConnect::revokeShopBody($origin, $redirect, $shopId, $shopSecret);
+        $revokedShop = KiyohConnect::http('POST', $base . '/shops/revoke', ['Content-Type: application/json'], json_encode($revokeBody), ['127.0.0.1']);
+        same(204, $revokedShop['status'], 'shop revoke accepts the stored shop credential');
+        $tokenRevoke = KiyohConnect::formBody(KiyohConnect::revokeTokenForm('refresh-token-test', $shopId, $shopSecret, 'refresh_token'));
+        $revokedToken = KiyohConnect::http('POST', $base . '/revoke', ['Content-Type: application/x-www-form-urlencoded'], $tokenRevoke, ['127.0.0.1']);
+        same(200, $revokedToken['status'], 'token revoke accepts the stored shop credential');
 
         $credentialsResponse = KiyohConnect::withRetry(
             function () use ($base) {
@@ -317,6 +357,7 @@ function runConnectHttpContract()
         proc_close($process);
         @unlink($log);
         @unlink($counter);
+        @unlink($shops);
         @unlink($serverErrorLog);
         @unlink(sys_get_temp_dir() . '/kiyoh-connect-server-' . getmypid() . '.out');
     }

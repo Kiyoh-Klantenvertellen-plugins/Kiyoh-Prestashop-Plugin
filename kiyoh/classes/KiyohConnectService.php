@@ -1,10 +1,10 @@
 <?php
 /**
- * PrestaShop adapter for the Kiyoh-Connect per-shop sign-in.
+ * PrestaShop adapter for the Kiyoh-Connect public per-shop sign-in.
  *
- * The HMAC key and client secret are read from the server environment or
- * from constants defined outside this module. They are never written to
- * configuration, logs, or the module zip.
+ * Connect returns shop_id and shop_secret once. This class stores that
+ * pair encrypted and sends it on token, refresh, revoke, and shop revoke.
+ * There is no shared HMAC key and no shared client secret.
  *
  * @author    Kiyoh
  * @copyright 2024 Kiyoh
@@ -22,11 +22,9 @@ require_once dirname(__FILE__) . '/KiyohConnect.php';
  */
 class KiyohConnectService
 {
-    public const HMAC_KEY_NAME = 'KIYOH_CONNECT_HMAC_KEY';
-
-    public const CLIENT_SECRET_NAME = 'KIYOH_CONNECT_CLIENT_SECRET';
-
     public const ENC_KEY = 'KIYOH_CONNECT_ENC_KEY';
+
+    public const SHOP_KEY = 'KIYOH_CONNECT_SHOP';
 
     public const PENDING_KEY = 'KIYOH_CONNECT_PENDING';
 
@@ -53,6 +51,7 @@ class KiyohConnectService
     {
         return [
             self::ENC_KEY,
+            self::SHOP_KEY,
             self::PENDING_KEY,
             self::REFRESH_KEY,
             self::LINKED_KEY,
@@ -63,11 +62,6 @@ class KiyohConnectService
             self::ISSUER_KEY,
             self::FLASH_KEY,
         ];
-    }
-
-    public static function secretsConfigured(): bool
-    {
-        return self::hmacKey() !== '' && self::clientSecret() !== '';
     }
 
     public static function ensureEncryptionKey(): bool
@@ -82,13 +76,13 @@ class KiyohConnectService
     }
 
     /**
-     * @return array{configured: bool, linked: bool, hasSession: bool, locationName: string, locationId: string, tenantId: string, platform: string, origin: string, redirect: string}
+     * @return array{hasShopCredential: bool, linked: bool, hasSession: bool, locationName: string, locationId: string, tenantId: string, platform: string, origin: string, redirect: string}
      */
     public static function status(): array
     {
         $shop = self::currentShop();
         $empty = [
-            'configured' => self::secretsConfigured(),
+            'hasShopCredential' => false,
             'linked' => false,
             'hasSession' => false,
             'locationName' => '',
@@ -101,6 +95,7 @@ class KiyohConnectService
         if ($shop === null) {
             return $empty;
         }
+        $empty['hasShopCredential'] = self::readShopCredential($shop) !== null;
         $empty['linked'] = self::configString(self::LINKED_KEY, $shop) === '1';
         $empty['hasSession'] = $empty['linked'] || self::configString(self::REFRESH_KEY, $shop) !== '';
         $empty['locationName'] = self::configString(self::LOCATION_NAME_KEY, $shop);
@@ -152,27 +147,30 @@ class KiyohConnectService
             // Still sign in. The callback will not redirect off this shop.
             $adminReturn = '';
         }
-        $hmac = self::hmacKey();
-        if ($hmac === '' || self::clientSecret() === '') {
-            return ['ok' => false, 'code' => 'secret_missing'];
-        }
         if (!self::ensureEncryptionKey()) {
             return ['ok' => false, 'code' => 'encryption_failed'];
         }
-
-        $issuedAt = time();
-        $body = KiyohConnect::shopRequest('register', $origin, $redirect, $issuedAt, $hmac);
-        $registered = self::postJson($issuer . '/shops/register', $body, $issuer, true);
-        if (!$registered['ok'] && $registered['status'] !== 409) {
-            return self::failure('register_failed', $registered);
-        }
-
-        $verifier = KiyohConnect::pkceVerifier();
-        $state = KiyohConnect::randomState();
         $key = self::encryptionKey();
         if ($key === null) {
             return ['ok' => false, 'code' => 'encryption_failed'];
         }
+
+        $credential = self::shopCredentialForReturn($shop, $issuer, $origin, $redirect);
+        if (!$credential['ok']) {
+            $failed = ['ok' => false, 'code' => $credential['code']];
+            if (isset($credential['detail']) && is_string($credential['detail'])) {
+                $failed['detail'] = $credential['detail'];
+            }
+            if (isset($credential['retryAfter']) && is_int($credential['retryAfter'])) {
+                $failed['retryAfter'] = $credential['retryAfter'];
+            }
+
+            return $failed;
+        }
+
+        $issuedAt = time();
+        $verifier = KiyohConnect::pkceVerifier();
+        $state = KiyohConnect::randomState();
         $pending = [
             'v' => 1,
             'state' => $state,
@@ -240,14 +238,19 @@ class KiyohConnectService
         $redirect = isset($pending['redirect']) && is_string($pending['redirect']) ? $pending['redirect'] : '';
         $verifier = isset($pending['verifier']) && is_string($pending['verifier']) ? $pending['verifier'] : '';
         $platform = isset($pending['platform']) && is_string($pending['platform']) ? $pending['platform'] : '';
-        $secret = self::clientSecret();
-        if ($issuer === '' || $redirect === '' || $verifier === '' || $secret === '' || $code === '') {
+        $credential = self::readShopCredential($shop);
+        if ($credential === null) {
+            self::flash($shop, 'shop_credential_missing', null);
+
+            return ['ok' => false, 'code' => 'shop_credential_missing', 'adminReturn' => $adminReturn];
+        }
+        if ($issuer === '' || $redirect === '' || $verifier === '' || $code === '') {
             self::flash($shop, 'token_failed', null);
 
             return ['ok' => false, 'code' => 'token_failed', 'adminReturn' => $adminReturn];
         }
 
-        $form = KiyohConnect::authorizationCodeForm($code, $verifier, $redirect, $secret);
+        $form = KiyohConnect::authorizationCodeForm($code, $verifier, $redirect, $credential['shopId'], $credential['shopSecret']);
         $tokenResponse = self::postForm($issuer . '/token', $form, $issuer, false);
         $token = self::tokenFromResponse($tokenResponse);
         if ($token === null) {
@@ -257,7 +260,7 @@ class KiyohConnectService
             return ['ok' => false, 'code' => $failure['code'], 'adminReturn' => $adminReturn, 'retryAfter' => $failure['retryAfter'] ?? null];
         }
 
-        $credentials = self::fetchCredentials($issuer, $token['accessToken'], $token['refreshToken'], $secret);
+        $credentials = self::fetchCredentials($issuer, $token['accessToken'], $token['refreshToken'], $credential['shopId'], $credential['shopSecret']);
         if (!$credentials['ok']) {
             if (isset($credentials['refreshToken'])) {
                 self::storeRefresh($shop, (string) $credentials['refreshToken']);
@@ -274,13 +277,13 @@ class KiyohConnectService
 
         $expectedTenant = KiyohConnect::tenantForPlatform($platform);
         if ($expectedTenant === null || $credentials['tenantId'] !== $expectedTenant) {
-            self::revokeToken($issuer, $token['refreshToken'], $secret, 'refresh_token');
+            self::revokeToken($issuer, $token['refreshToken'], $credential['shopId'], $credential['shopSecret'], 'refresh_token');
             self::flash($shop, 'tenant_mismatch', null);
 
             return ['ok' => false, 'code' => 'tenant_mismatch', 'adminReturn' => $adminReturn];
         }
         if (!self::storeRefresh($shop, $credentials['refreshToken'])) {
-            self::revokeToken($issuer, $credentials['refreshToken'], $secret, 'refresh_token');
+            self::revokeToken($issuer, $credentials['refreshToken'], $credential['shopId'], $credential['shopSecret'], 'refresh_token');
             self::flash($shop, 'encryption_failed', null);
 
             return ['ok' => false, 'code' => 'encryption_failed', 'adminReturn' => $adminReturn];
@@ -308,14 +311,14 @@ class KiyohConnectService
         if ($shop === null) {
             return ['ok' => false, 'code' => 'shop_context'];
         }
-        $secret = self::clientSecret();
-        if ($secret === '') {
-            return ['ok' => false, 'code' => 'secret_missing'];
-        }
         $issuer = self::configString(self::ISSUER_KEY, $shop);
         $refresh = self::readRefresh($shop);
+        $credential = self::readShopCredential($shop);
         if ($issuer !== '' && $refresh !== null) {
-            $revoked = self::revokeToken($issuer, $refresh, $secret, 'refresh_token');
+            if ($credential === null) {
+                return ['ok' => false, 'code' => 'shop_credential_missing'];
+            }
+            $revoked = self::revokeToken($issuer, $refresh, $credential['shopId'], $credential['shopSecret'], 'refresh_token');
             if (!$revoked['ok'] && !in_array($revoked['status'], [200, 204, 400, 401], true)) {
                 return self::failure('revoke_failed', $revoked);
             }
@@ -392,43 +395,27 @@ class KiyohConnectService
     }
 
     /**
-     * Environment wins over a constant defined outside the module.
-     */
-    public static function readExternalSecret(string $name): string
-    {
-        $env = getenv($name);
-        if (is_string($env) && trim($env) !== '') {
-            return trim($env);
-        }
-        if (defined($name)) {
-            $value = constant($name);
-            if (is_string($value) && trim($value) !== '') {
-                return trim($value);
-            }
-        }
-
-        return '';
-    }
-
-    /**
      * @param array{id_shop: int, id_shop_group: int} $shop
      */
     private static function revokeStoredShop(array $shop): void
     {
-        $secret = self::clientSecret();
-        $hmac = self::hmacKey();
+        $credential = self::readShopCredential($shop);
         $issuer = self::configString(self::ISSUER_KEY, $shop);
         $refresh = self::readRefresh($shop);
-        if ($secret !== '' && $issuer !== '' && $refresh !== null) {
-            self::revokeToken($issuer, $refresh, $secret, 'refresh_token');
+        if ($credential !== null && $issuer !== '' && $refresh !== null) {
+            self::revokeToken($issuer, $refresh, $credential['shopId'], $credential['shopSecret'], 'refresh_token');
         }
         $origin = self::configString(self::ORIGIN_KEY, $shop);
         $redirect = self::configString(self::REDIRECT_KEY, $shop);
-        if ($hmac === '' || $issuer === '' || $origin === '' || $redirect === '') {
+        if ($credential === null || $issuer === '' || $origin === '' || $redirect === '') {
             return;
         }
-        $body = KiyohConnect::shopRequest('revoke', $origin, $redirect, time(), $hmac);
-        self::postJson($issuer . '/shops/revoke', $body, $issuer, true);
+        self::postJson(
+            $issuer . '/shops/revoke',
+            KiyohConnect::revokeShopBody($origin, $redirect, $credential['shopId'], $credential['shopSecret']),
+            $issuer,
+            true
+        );
     }
 
     /**
@@ -450,11 +437,11 @@ class KiyohConnectService
     /**
      * @return array{ok: bool, code: string, locationId?: string, tenantId?: int, locationName?: string, inviteApiKey?: string, refreshToken: string, retryAfter?: int}
      */
-    private static function fetchCredentials(string $issuer, string $accessToken, string $refreshToken, string $secret): array
+    private static function fetchCredentials(string $issuer, string $accessToken, string $refreshToken, string $shopId, string $shopSecret): array
     {
         $response = self::getBearer($issuer . '/integration/credentials', $accessToken, $issuer, true);
         if ($response['status'] === 401) {
-            $refreshed = self::postForm($issuer . '/token', KiyohConnect::refreshForm($refreshToken, $secret), $issuer, true);
+            $refreshed = self::postForm($issuer . '/token', KiyohConnect::refreshForm($refreshToken, $shopId, $shopSecret), $issuer, true);
             $token = self::tokenFromResponse($refreshed);
             if ($token === null) {
                 $failure = self::failure('credentials_failed', $response);
@@ -562,14 +549,114 @@ class KiyohConnectService
     /**
      * @return array{ok: bool, status: int, body: string, error: string|null, retryAfter: int|null}
      */
-    private static function revokeToken(string $issuer, string $token, string $secret, string $hint): array
+    private static function revokeToken(string $issuer, string $token, string $shopId, string $shopSecret, string $hint): array
     {
         return self::postForm(
             $issuer . '/revoke',
-            KiyohConnect::revokeTokenForm($token, $secret, $hint),
+            KiyohConnect::revokeTokenForm($token, $shopId, $shopSecret, $hint),
             $issuer,
             true
         );
+    }
+
+    /**
+     * Reuse the stored shop credential when the return address is unchanged.
+     * Otherwise register, and persist a newly issued secret before the popup.
+     *
+     * @param array{id_shop: int, id_shop_group: int} $shop
+     * @return array{ok: bool, code: string, shopId?: string, shopSecret?: string, detail?: string, retryAfter?: int}
+     */
+    private static function shopCredentialForReturn(array $shop, string $issuer, string $origin, string $redirect): array
+    {
+        $existing = self::readShopCredential($shop);
+        $storedOrigin = self::configString(self::ORIGIN_KEY, $shop);
+        $storedRedirect = self::configString(self::REDIRECT_KEY, $shop);
+        $storedIssuer = self::configString(self::ISSUER_KEY, $shop);
+        $sameReturn = $existing !== null
+            && $storedOrigin === $origin
+            && $storedRedirect === $redirect
+            && $storedIssuer === $issuer;
+        if ($sameReturn) {
+            self::put($shop, self::ORIGIN_KEY, $origin);
+            self::put($shop, self::REDIRECT_KEY, $redirect);
+            self::put($shop, self::ISSUER_KEY, $issuer);
+
+            return ['ok' => true, 'code' => 'reused', 'shopId' => $existing['shopId'], 'shopSecret' => $existing['shopSecret']];
+        }
+
+        $registered = self::postJson($issuer . '/shops/register', KiyohConnect::registerBody($origin, $redirect), $issuer, true);
+        $completed = $registered['ok'] || $registered['status'] === 409;
+        if (!$completed) {
+            $failure = self::failure('register_failed', $registered);
+
+            return $failure;
+        }
+        $json = json_decode($registered['body'], true);
+        $parsed = is_array($json) ? KiyohConnect::parseShopCredential($json) : null;
+        if ($parsed !== null && $parsed['shopSecret'] !== null) {
+            if (!self::storeShopCredential($shop, $parsed['shopId'], $parsed['shopSecret'])) {
+                return ['ok' => false, 'code' => 'encryption_failed'];
+            }
+            self::put($shop, self::ORIGIN_KEY, $origin);
+            self::put($shop, self::REDIRECT_KEY, $redirect);
+            self::put($shop, self::ISSUER_KEY, $issuer);
+
+            return ['ok' => true, 'code' => 'registered', 'shopId' => $parsed['shopId'], 'shopSecret' => $parsed['shopSecret']];
+        }
+        if (
+            $existing !== null
+            && $parsed !== null
+            && $parsed['shopSecret'] === null
+            && $parsed['shopId'] === $existing['shopId']
+            && $storedOrigin === $origin
+            && $storedRedirect === $redirect
+        ) {
+            self::put($shop, self::ORIGIN_KEY, $origin);
+            self::put($shop, self::REDIRECT_KEY, $redirect);
+            self::put($shop, self::ISSUER_KEY, $issuer);
+
+            return ['ok' => true, 'code' => 'reused', 'shopId' => $existing['shopId'], 'shopSecret' => $existing['shopSecret']];
+        }
+
+        return ['ok' => false, 'code' => 'shop_credential_missing'];
+    }
+
+    /**
+     * @param array{id_shop: int, id_shop_group: int} $shop
+     * @return array{shopId: string, shopSecret: string}|null
+     */
+    private static function readShopCredential(array $shop): ?array
+    {
+        $key = self::encryptionKey();
+        $stored = self::configString(self::SHOP_KEY, $shop);
+        if ($key === null || $stored === '') {
+            return null;
+        }
+        $json = KiyohConnect::decrypt($stored, $key);
+        if ($json === null) {
+            return null;
+        }
+
+        return KiyohConnect::decodeShopCredential($json);
+    }
+
+    /**
+     * @param array{id_shop: int, id_shop_group: int} $shop
+     */
+    private static function storeShopCredential(array $shop, string $shopId, string $shopSecret): bool
+    {
+        $key = self::encryptionKey();
+        $json = KiyohConnect::encodeShopCredential($shopId, $shopSecret);
+        if ($key === null || $json === null) {
+            return false;
+        }
+        $encrypted = KiyohConnect::encrypt($json, $key);
+        if ($encrypted === null) {
+            return false;
+        }
+        self::put($shop, self::SHOP_KEY, $encrypted);
+
+        return true;
     }
 
     /**
@@ -783,16 +870,6 @@ class KiyohConnectService
     private static function put(array $shop, string $key, string $value): void
     {
         Configuration::updateValue($key, $value, false, $shop['id_shop_group'], $shop['id_shop']);
-    }
-
-    private static function hmacKey(): string
-    {
-        return self::readExternalSecret(self::HMAC_KEY_NAME);
-    }
-
-    private static function clientSecret(): string
-    {
-        return self::readExternalSecret(self::CLIENT_SECRET_NAME);
     }
 
     private static function userAgent(): string

@@ -1,14 +1,16 @@
 <?php
 /**
- * Pure Kiyoh-Connect 1.1 client (per-shop return address).
+ * Pure Kiyoh-Connect 1.2 client (public, per-shop return address).
  *
- * No PrestaShop, network, or secret storage. KiyohConnectService performs
- * the HTTP calls and writes shop configuration.
+ * No PrestaShop and no network. KiyohConnectService performs the HTTP calls
+ * and writes shop configuration.
  *
- * Contract (Kiyoh-Connect PR #1, client kiyoh-prestashop):
- * register HMAC, popup /authorize, /token with client_secret, credentials,
- * refresh and revoke. The HMAC key and client secret are arguments. This
- * file does not contain them.
+ * Contract (Kiyoh-Connect PR #1, v1.2.0, client kiyoh-prestashop):
+ * POST /shops/register has no HMAC and returns a per-shop credential once.
+ * Code exchange is PKCE S256 plus that credential and the exact redirect_uri.
+ * The same credential is sent on refresh, /revoke, and /shops/revoke.
+ * Wire names live only in FIELDS so they can move when the Connect PR
+ * reports the final names. This file contains no shared secret.
  *
  * @author    Kiyoh
  * @copyright 2024 Kiyoh
@@ -49,6 +51,26 @@ class KiyohConnect
     public const MAX_ATTEMPTS = 5;
 
     /**
+     * Logical name → wire name. Call sites use logical names. Change only
+     * this map when Kiyoh-Connect PR #1 reports the final JSON fields.
+     *
+     * @var array<string, string>
+     */
+    public const FIELDS = [
+        'clientId' => 'client_id',
+        'shopUrl' => 'shop_url',
+        'redirectUri' => 'redirect_uri',
+        'shopId' => 'shop_id',
+        'shopSecret' => 'shop_secret',
+        'grantType' => 'grant_type',
+        'code' => 'code',
+        'codeVerifier' => 'code_verifier',
+        'refreshToken' => 'refresh_token',
+        'token' => 'token',
+        'tokenTypeHint' => 'token_type_hint',
+    ];
+
+    /**
      * @return string|null Issuer base URL for a saved platform value.
      */
     public static function issuerForPlatform(string $platform): ?string
@@ -81,7 +103,7 @@ class KiyohConnect
     }
 
     /**
-     * Shop origin used in the register/revoke signature. No path.
+     * Shop origin sent as the shop URL. No path.
      */
     public static function shopOrigin(string $host): ?string
     {
@@ -184,53 +206,78 @@ class KiyohConnect
         return self::base64Url(random_bytes(32));
     }
 
-    /**
-     * LF-joined signature input. No trailing newline.
-     */
-    public static function canonicalString(
-        string $action,
-        string $clientId,
-        string $shopOrigin,
-        string $redirectUri,
-        int $issuedAt
-    ): string {
-        return implode("\n", [
-            'v1',
-            $action,
-            $clientId,
-            $shopOrigin,
-            $redirectUri,
-            (string) $issuedAt,
-        ]);
-    }
-
-    /**
-     * base64url (no padding) HMAC-SHA256 over canonicalString().
-     */
-    public static function sign(string $canonical, string $hmacKey): string
+    public static function wire(string $logical): string
     {
-        return self::base64Url(hash_hmac('sha256', $canonical, $hmacKey, true));
+        return self::FIELDS[$logical];
     }
 
     /**
-     * @return array{client_id: string, shop_url: string, redirect_uri: string, issued_at: int, signature: string}
+     * Public shop registration. No signature and no shared secret.
+     *
+     * @return array<string, string>
      */
-    public static function shopRequest(
-        string $action,
-        string $shopOrigin,
-        string $redirectUri,
-        int $issuedAt,
-        string $hmacKey
-    ): array {
-        $canonical = self::canonicalString($action, self::CLIENT_ID, $shopOrigin, $redirectUri, $issuedAt);
-
+    public static function registerBody(string $shopOrigin, string $redirectUri): array
+    {
         return [
-            'client_id' => self::CLIENT_ID,
-            'shop_url' => $shopOrigin,
-            'redirect_uri' => $redirectUri,
-            'issued_at' => $issuedAt,
-            'signature' => self::sign($canonical, $hmacKey),
+            self::wire('clientId') => self::CLIENT_ID,
+            self::wire('shopUrl') => $shopOrigin,
+            self::wire('redirectUri') => $redirectUri,
         ];
+    }
+
+    /**
+     * Register response. shopSecret is null when Connect omits it on a repeat.
+     *
+     * @param array<string, mixed> $json
+     * @return array{shopId: string, shopSecret: string|null}|null
+     */
+    public static function parseShopCredential(array $json): ?array
+    {
+        $shopId = self::scalarField($json, self::wire('shopId'));
+        if ($shopId === null || $shopId === '' || self::containsControl($shopId) || strlen($shopId) > 200) {
+            return null;
+        }
+        $secretKey = self::wire('shopSecret');
+        if (!array_key_exists($secretKey, $json) || $json[$secretKey] === null) {
+            return ['shopId' => $shopId, 'shopSecret' => null];
+        }
+        $shopSecret = self::stringField($json, $secretKey);
+        if ($shopSecret === null || self::containsControl($shopSecret) || strlen($shopSecret) > 500) {
+            return null;
+        }
+
+        return ['shopId' => $shopId, 'shopSecret' => $shopSecret];
+    }
+
+    /**
+     * Plaintext stored under the module encryption key. Logical names, not wire names.
+     */
+    public static function encodeShopCredential(string $shopId, string $shopSecret): ?string
+    {
+        if ($shopId === '' || $shopSecret === '' || self::containsControl($shopId) || self::containsControl($shopSecret)) {
+            return null;
+        }
+        $json = json_encode(['shopId' => $shopId, 'shopSecret' => $shopSecret], JSON_UNESCAPED_SLASHES);
+
+        return is_string($json) ? $json : null;
+    }
+
+    /**
+     * @return array{shopId: string, shopSecret: string}|null
+     */
+    public static function decodeShopCredential(string $json): ?array
+    {
+        $decoded = json_decode($json, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+        $shopId = isset($decoded['shopId']) && is_string($decoded['shopId']) ? $decoded['shopId'] : '';
+        $shopSecret = isset($decoded['shopSecret']) && is_string($decoded['shopSecret']) ? $decoded['shopSecret'] : '';
+        if (self::encodeShopCredential($shopId, $shopSecret) === null) {
+            return null;
+        }
+
+        return ['shopId' => $shopId, 'shopSecret' => $shopSecret];
     }
 
     public static function authorizeUrl(
@@ -259,41 +306,63 @@ class KiyohConnect
         string $code,
         string $codeVerifier,
         string $redirectUri,
-        string $clientSecret
+        string $shopId,
+        string $shopSecret
     ): array {
         return [
-            'grant_type' => 'authorization_code',
-            'client_id' => self::CLIENT_ID,
-            'client_secret' => $clientSecret,
-            'code' => $code,
-            'code_verifier' => $codeVerifier,
-            'redirect_uri' => $redirectUri,
+            self::wire('grantType') => 'authorization_code',
+            self::wire('clientId') => self::CLIENT_ID,
+            self::wire('shopId') => $shopId,
+            self::wire('shopSecret') => $shopSecret,
+            self::wire('code') => $code,
+            self::wire('codeVerifier') => $codeVerifier,
+            self::wire('redirectUri') => $redirectUri,
         ];
     }
 
     /**
      * @return array<string, string>
      */
-    public static function refreshForm(string $refreshToken, string $clientSecret): array
+    public static function refreshForm(string $refreshToken, string $shopId, string $shopSecret): array
     {
         return [
-            'grant_type' => 'refresh_token',
-            'client_id' => self::CLIENT_ID,
-            'client_secret' => $clientSecret,
-            'refresh_token' => $refreshToken,
+            self::wire('grantType') => 'refresh_token',
+            self::wire('clientId') => self::CLIENT_ID,
+            self::wire('shopId') => $shopId,
+            self::wire('shopSecret') => $shopSecret,
+            self::wire('refreshToken') => $refreshToken,
         ];
     }
 
     /**
      * @return array<string, string>
      */
-    public static function revokeTokenForm(string $token, string $clientSecret, string $hint): array
+    public static function revokeTokenForm(string $token, string $shopId, string $shopSecret, string $hint): array
     {
         return [
-            'token' => $token,
-            'token_type_hint' => $hint,
-            'client_id' => self::CLIENT_ID,
-            'client_secret' => $clientSecret,
+            self::wire('token') => $token,
+            self::wire('tokenTypeHint') => $hint,
+            self::wire('clientId') => self::CLIENT_ID,
+            self::wire('shopId') => $shopId,
+            self::wire('shopSecret') => $shopSecret,
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public static function revokeShopBody(
+        string $shopOrigin,
+        string $redirectUri,
+        string $shopId,
+        string $shopSecret
+    ): array {
+        return [
+            self::wire('clientId') => self::CLIENT_ID,
+            self::wire('shopId') => $shopId,
+            self::wire('shopSecret') => $shopSecret,
+            self::wire('shopUrl') => $shopOrigin,
+            self::wire('redirectUri') => $redirectUri,
         ];
     }
 

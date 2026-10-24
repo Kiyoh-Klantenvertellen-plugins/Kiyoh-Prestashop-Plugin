@@ -1,7 +1,7 @@
 <?php
 /**
- * Local stand-in for Kiyoh-Connect 1.1 shop register, token, and credentials.
- * The HMAC key and client secret come from the test process environment.
+ * Local stand-in for Kiyoh-Connect 1.2 public shop register, token, and credentials.
+ * The shop credential is issued once and stored in KIYOH_CONNECT_SHOPS.
  */
 
 define('_PS_VERSION_', '9.2.0');
@@ -11,8 +11,10 @@ $log = getenv('KIYOH_CONNECT_LOG');
 if (!is_string($log) || $log === '') {
     $log = sys_get_temp_dir() . '/kiyoh-connect-test.log';
 }
-$hmac = getenv('KIYOH_CONNECT_TEST_HMAC');
-$secret = getenv('KIYOH_CONNECT_TEST_SECRET');
+$storeFile = getenv('KIYOH_CONNECT_SHOPS');
+if (!is_string($storeFile) || $storeFile === '') {
+    $storeFile = sys_get_temp_dir() . '/kiyoh-connect-shops.json';
+}
 $raw = file_get_contents('php://input');
 if (!is_string($raw)) {
     $raw = '';
@@ -32,48 +34,67 @@ file_put_contents($log, json_encode([
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
 
-if (($method === 'POST') && ($path === '/shops/register' || $path === '/shops/revoke')) {
+if ($method === 'POST' && $path === '/shops/register') {
     $data = json_decode($raw, true);
-    $action = $path === '/shops/revoke' ? 'revoke' : 'register';
+    $allowed = [
+        KiyohConnect::wire('clientId'),
+        KiyohConnect::wire('shopUrl'),
+        KiyohConnect::wire('redirectUri'),
+    ];
     $ok = is_array($data)
-        && ($data['client_id'] ?? '') === KiyohConnect::CLIENT_ID
-        && is_string($hmac)
-        && isset($data['shop_url'], $data['redirect_uri'], $data['issued_at'], $data['signature'])
-        && is_numeric($data['issued_at']);
-    if ($ok) {
-        $canonical = KiyohConnect::canonicalString(
-            $action,
-            KiyohConnect::CLIENT_ID,
-            (string) $data['shop_url'],
-            (string) $data['redirect_uri'],
-            (int) $data['issued_at']
-        );
-        $expected = KiyohConnect::sign($canonical, (string) $hmac);
-        $ok = hash_equals($expected, (string) $data['signature']);
-    }
+        && ($data[KiyohConnect::wire('clientId')] ?? '') === KiyohConnect::CLIENT_ID
+        && is_string($data[KiyohConnect::wire('shopUrl')] ?? null)
+        && is_string($data[KiyohConnect::wire('redirectUri')] ?? null)
+        && array_diff(array_keys($data), $allowed) === [];
     if (!$ok) {
-        http_response_code(401);
-        echo json_encode(['error' => 'invalid_client']);
+        http_response_code(400);
+        echo json_encode(['error' => 'invalid_request']);
         return;
     }
-    http_response_code(204);
+    $shops = readShops($storeFile);
+    $key = shopKey((string) $data[KiyohConnect::wire('shopUrl')], (string) $data[KiyohConnect::wire('redirectUri')]);
+    if (isset($shops[$key]) && is_array($shops[$key])) {
+        http_response_code(200);
+        echo json_encode([
+            KiyohConnect::wire('shopId') => $shops[$key]['id'],
+        ]);
+        return;
+    }
+    $record = [
+        'id' => 'shop-' . substr(hash('sha256', $key), 0, 12),
+        'value' => bin2hex(random_bytes(16)),
+        'url' => (string) $data[KiyohConnect::wire('shopUrl')],
+        'redirect' => (string) $data[KiyohConnect::wire('redirectUri')],
+    ];
+    $shops[$key] = $record;
+    writeShops($storeFile, $shops);
+    http_response_code(200);
+    echo json_encode([
+        KiyohConnect::wire('shopId') => $record['id'],
+        KiyohConnect::wire('shopSecret') => $record['value'],
+    ]);
     return;
 }
 
 if ($method === 'POST' && $path === '/token') {
     parse_str($raw, $form);
-    if (!is_array($form) || !is_string($secret) || ($form['client_secret'] ?? '') !== $secret || ($form['client_id'] ?? '') !== KiyohConnect::CLIENT_ID) {
+    $matched = is_array($form) ? matchShop($storeFile, $form) : null;
+    if (!is_array($form) || array_key_exists('client_secret', $form) || $matched === null) {
         http_response_code(401);
         echo json_encode(['error' => 'invalid_client']);
         return;
     }
-    $grant = (string) ($form['grant_type'] ?? '');
+    $grant = (string) ($form[KiyohConnect::wire('grantType')] ?? '');
     if ($grant !== 'authorization_code' && $grant !== 'refresh_token') {
         http_response_code(400);
         echo json_encode(['error' => 'unsupported_grant_type']);
         return;
     }
-    if ($grant === 'authorization_code' && (($form['code_verifier'] ?? '') === '' || ($form['redirect_uri'] ?? '') === '')) {
+    if ($grant === 'authorization_code' && (
+        ($form[KiyohConnect::wire('codeVerifier')] ?? '') === ''
+        || ($form[KiyohConnect::wire('redirectUri')] ?? '') !== $matched['redirect']
+        || ($form[KiyohConnect::wire('code')] ?? '') === ''
+    )) {
         http_response_code(400);
         echo json_encode(['error' => 'invalid_grant']);
         return;
@@ -120,7 +141,8 @@ if ($method === 'GET' && $path === '/integration/credentials') {
 
 if ($method === 'POST' && $path === '/revoke') {
     parse_str($raw, $form);
-    if (!is_array($form) || !is_string($secret) || ($form['client_secret'] ?? '') !== $secret) {
+    $matched = is_array($form) ? matchShop($storeFile, $form) : null;
+    if (!is_array($form) || array_key_exists('client_secret', $form) || $matched === null || ($form[KiyohConnect::wire('token')] ?? '') === '') {
         http_response_code(401);
         echo json_encode(['error' => 'invalid_client']);
         return;
@@ -130,5 +152,89 @@ if ($method === 'POST' && $path === '/revoke') {
     return;
 }
 
+if ($method === 'POST' && $path === '/shops/revoke') {
+    $data = json_decode($raw, true);
+    $matched = is_array($data) ? matchShop($storeFile, $data) : null;
+    $ok = is_array($data)
+        && $matched !== null
+        && ($data[KiyohConnect::wire('clientId')] ?? '') === KiyohConnect::CLIENT_ID
+        && ($data[KiyohConnect::wire('shopUrl')] ?? '') === $matched['url']
+        && ($data[KiyohConnect::wire('redirectUri')] ?? '') === $matched['redirect']
+        && !array_key_exists('signature', $data)
+        && !array_key_exists('client_secret', $data);
+    if (!$ok) {
+        http_response_code(401);
+        echo json_encode(['error' => 'invalid_client']);
+        return;
+    }
+    http_response_code(204);
+    return;
+}
+
 http_response_code(404);
 echo json_encode(['error' => 'not_found']);
+
+/**
+ * @return array<string, array{id: string, value: string, url: string, redirect: string}>
+ */
+function readShops(string $file): array
+{
+    $raw = is_file($file) ? file_get_contents($file) : '';
+    $decoded = is_string($raw) ? json_decode($raw, true) : null;
+    if (!is_array($decoded)) {
+        return [];
+    }
+    $shops = [];
+    foreach ($decoded as $key => $row) {
+        if (!is_string($key) || !is_array($row)) {
+            continue;
+        }
+        if (!isset($row['id'], $row['value'], $row['url'], $row['redirect']) || !is_string($row['id']) || !is_string($row['value']) || !is_string($row['url']) || !is_string($row['redirect'])) {
+            continue;
+        }
+        $shops[$key] = [
+            'id' => $row['id'],
+            'value' => $row['value'],
+            'url' => $row['url'],
+            'redirect' => $row['redirect'],
+        ];
+    }
+
+    return $shops;
+}
+
+/**
+ * @param array<string, array{id: string, value: string, url: string, redirect: string}> $shops
+ */
+function writeShops(string $file, array $shops): void
+{
+    file_put_contents($file, json_encode($shops));
+}
+
+function shopKey(string $url, string $redirect): string
+{
+    return hash('sha256', $url . "\n" . $redirect);
+}
+
+/**
+ * @param array<string, mixed> $fields
+ * @return array{id: string, value: string, url: string, redirect: string}|null
+ */
+function matchShop(string $file, array $fields): ?array
+{
+    $id = $fields[KiyohConnect::wire('shopId')] ?? null;
+    $value = $fields[KiyohConnect::wire('shopSecret')] ?? null;
+    if (!is_string($id) || !is_string($value) || $id === '' || $value === '') {
+        return null;
+    }
+    if (($fields[KiyohConnect::wire('clientId')] ?? KiyohConnect::CLIENT_ID) !== KiyohConnect::CLIENT_ID) {
+        return null;
+    }
+    foreach (readShops($file) as $row) {
+        if (strlen($row['id']) === strlen($id) && strlen($row['value']) === strlen($value) && hash_equals($row['id'], $id) && hash_equals($row['value'], $value)) {
+            return $row;
+        }
+    }
+
+    return null;
+}

@@ -14,14 +14,15 @@
 
 ## External API
 - Review API: `https://www.kiyoh.com` or `https://www.klantenvertellen.nl` (existing invite and product calls)
-- Kiyoh-Connect 1.1.0 (KVMicroServices/Kiyoh-Connect PR #1, branch `cursor/per-shop-redirect-clients-64d3`)
+- Kiyoh-Connect 1.2.0 (KVMicroServices/Kiyoh-Connect PR #1). Self-hosted clients are public.
   - Issuer `https://connect.kiyoh.com` tenant 98
   - Issuer `https://connect.klantenvertellen.nl` tenant 99
   - Client `kiyoh-prestashop`, scope `integration:connect`, PKCE S256 + `state`
 - Kiyoh Mobile health: `POST {url}/api/integrations/health`, default `https://kiyoh-mobile.com`
-- Auth: Connect authorization code. `POST /token` is `application/x-www-form-urlencoded` with `grant_type`, `client_id`, `client_secret`, `code`, `code_verifier`, `redirect_uri`. Refresh uses `grant_type=refresh_token`. Credentials are `GET /integration/credentials` with `Authorization: Bearer`.
-- Shop registration: `POST {issuer}/shops/register` JSON `client_id`, `shop_url`, `redirect_uri`, `issued_at`, `signature`. Signature is base64url (no padding) HMAC-SHA256 over LF-joined lines `v1`, `register`, client id, shop origin, redirect URI, unix `issued_at`. Uninstall uses the same body with action `revoke` on `POST {issuer}/shops/revoke`.
-- `shop_url` and the signature's shop origin are `https://{shop-host}` with no path. `redirect_uri` is `https://{shop-host}/module/kiyoh/oauth`, with the PrestaShop base path inserted when the shop is in a subdirectory.
+- Auth: Connect authorization code. `POST /token` is `application/x-www-form-urlencoded` with `grant_type=authorization_code`, `client_id`, the per-shop credential, `code`, `code_verifier`, and the exact `redirect_uri`. Refresh uses `grant_type=refresh_token` and the same shop credential. There is no shared client secret. Credentials are `GET /integration/credentials` with `Authorization: Bearer`.
+- Shop registration: `POST {issuer}/shops/register` JSON with `client_id`, `shop_url`, and `redirect_uri`. No HMAC. The response returns a per-shop credential once. The module stores it encrypted and sends it on `/token`, refresh, `POST /revoke`, and `POST /shops/revoke`. A later register for the same return address may omit the secret; the module keeps the stored one. If the return address changed and no new secret is returned, configuration shows `shop_credential_missing`.
+- Wire names are provisional and live only in `KiyohConnect::FIELDS` (`shopId` → `shop_id`, `shopSecret` → `shop_secret`, plus the grant, code, verifier, refresh, and token fields). Change that map when Connect PR #1 reports the final names. Call sites use logical names.
+- `shop_url` is `https://{shop-host}` with no path. `redirect_uri` is `https://{shop-host}/module/kiyoh/oauth`, with the PrestaShop base path inserted when the shop is in a subdirectory.
 - Rate limits: 408, 425, 429, and 5xx may be retried with full jitter (base 1s, cap 60s, max 5) only when the wait is at most 2 seconds. `Retry-After` and `retryAfterSeconds` win. A longer wait is shown to the merchant. The authorization-code grant is not retried (the code is single-use).
 - Pagination: none for Connect
 - Webhooks: none
@@ -31,7 +32,7 @@
 - Trigger: merchant clicks **Connect with Kiyoh / Klantenvertellen** (popup), or saves manual credentials. Health also runs on save, invite, product sync, and daily cron.
 - Volume: one location per shop. Health product codes capped at 500.
 - Failure policy: Connect errors stay on the configuration page and do not change orders. Health errors are logged and swallowed. Invalid tenant discards the tokens and saves nothing.
-- Idempotency: register can be repeated. The authorization code is single-use; the pending PKCE record is deleted when `state` matches. Credentials overwrite `KIYOH_LOCATION_ID` and `KIYOH_API_KEY`. A second connect replaces the refresh token.
+- Idempotency: register can be repeated. The shop secret is issued once; an unchanged return address reuses the stored credential and skips register. The authorization code is single-use; the pending PKCE record is deleted when `state` matches. Credentials overwrite `KIYOH_LOCATION_ID` and `KIYOH_API_KEY`. A second connect replaces the refresh token. Disconnect revokes the refresh token and keeps the shop credential.
 
 ## Permissions requested (and why)
 - Back-office employee who can configure modules, plus the `AdminModules` token on Connect and Disconnect. Stops another site from starting a sign-in or disconnecting the shop.
@@ -43,25 +44,26 @@
 
 ## Data stored, retention, uninstall behaviour
 - `ps_kiyoh_product_sync` and `ps_kiyoh_invitations` (existing).
-- Configuration: module settings, including Location ID and API key (the same fields a merchant can type). Connect also stores the shop origin, return address, issuer, location name, tenant id, an encrypted refresh token, a short-lived encrypted PKCE pending record, a one-shot result message, and a module-generated AES-256-GCM key.
-- The HMAC key and client secret are not stored and are not in the zip. Environment variable wins over a PHP constant of the same name.
-- Uninstall deletes those configuration keys and both tables, and best-effort calls `POST /revoke` and `POST /shops/revoke`. It does not delete orders, customers, or products. There is no separate export screen; Location ID is visible on the configuration page. Uninstall is the erase path.
-- If the HMAC key is missing at uninstall time, local data is still deleted and the remote shop registration cannot be revoked.
+- Configuration: module settings, including Location ID and API key (the same fields a merchant can type). Connect also stores the shop origin, return address, issuer, location name, tenant id, an encrypted refresh token, an encrypted shop credential (`shop_id` + `shop_secret`), a short-lived encrypted PKCE pending record, a one-shot result message, and a module-generated AES-256-GCM key.
+- There is no shared HMAC key and no shared client secret, in the zip or on the server.
+- Uninstall deletes those configuration keys and both tables, and best-effort calls `POST /revoke` and `POST /shops/revoke` with the stored shop credential. It does not delete orders, customers, or products. There is no separate export screen; Location ID is visible on the configuration page. Uninstall is the erase path.
+- If the shop credential is missing at uninstall time, remote calls are skipped and local data is still deleted. Network errors do not stop uninstall.
 
 ## Acceptance test
-1. With the server secrets set, Connect on `connect.kiyoh.com` saves Location ID, invite API key, and tenant 98. Klantenvertellen saves tenant 99.
-2. Connecting the same shop again overwrites the same configuration keys and does not create a second location row.
+1. With no shared secret configured, Connect on `connect.kiyoh.com` saves Location ID, invite API key, and tenant 98. Klantenvertellen saves tenant 99. The shop credential is stored encrypted after register, before the popup.
+2. Connecting the same shop again overwrites the same configuration keys and does not create a second location row. The same return address reuses the stored shop credential.
 3. A wrong `state`, a cancelled login, a tenant mismatch, and a 401 from credentials leave a clear configuration message and do not throw into checkout.
 4. `POST /integration/credentials` returning 429 then 200 is covered by `php tests/KiyohConnectTest.php`.
 5. Manual Location ID and API key still save and still pass Test Connection when Connect is not used.
 6. Uninstall removes module tables and configuration keys.
 7. `python3 scripts/preflight.py .` reports no unjustified high finding. `bash scripts/build-release.sh` produces the zip. `kiyoh.zip` is not in git.
 
-## Security concern — shared Connect secrets
-`kiyoh-prestashop` is a confidential client: shop registration is HMAC-signed and the token request includes `client_secret`. This module is a zip installed on many merchants' servers. Putting the HMAC key or client secret in that zip would publish them to anyone who downloads the release. The module therefore refuses to embed them and reads `KIYOH_CONNECT_HMAC_KEY` and `KIYOH_CONNECT_CLIENT_SECRET` from the server only.
+## Security
+`kiyoh-prestashop` is a public client. The module does not embed a shared HMAC key or client secret and does not ask the merchant to provide one. `POST /shops/register` returns a per-shop credential once. The module encrypts `{shopId, shopSecret}` with AES-256-GCM under `KIYOH_CONNECT_ENC_KEY` (32 bytes, generated on install, stored in the shop database, not a KMS) and sends that credential on token, refresh, token revoke, and shop revoke. Disconnect keeps the credential so reconnect does not need a second one-time secret. Code exchange also requires PKCE S256 and the exact redirect URI.
 
-That does not make a single shared secret safe. Every shop that can sign can register an arbitrary return address for this client. The secret is only as protected as the least-protected shop. A public PKCE client (no HMAC key, no client secret in the module), or a per-shop key that Connect issues without a global secret in the package, would match how this module is distributed. Until then, operators must inject the secrets outside the zip and treat them as extractable.
+The encryption key lives in the shop database. Anyone with database access can decrypt the shop secret and the refresh token. That is the storage available to a self-hosted PrestaShop module.
 
 ## Open questions
-- Production `connect.kiyoh.com` was still serving Kiyoh-Connect 1.0.0 (`Cannot POST /shops/register`) when this module was written. Merchants can complete the popup only after 1.1.0 is deployed.
+- Production `connect.kiyoh.com` was still serving Kiyoh-Connect 1.0.0 (`Cannot POST /shops/register`) when this module was written. Merchants can complete the popup only after 1.2.0 is deployed. Wire names in `KiyohConnect::FIELDS` are provisional until that PR reports the final fields.
 - The back office has to be HTTPS on the same host as the shop for the popup to land back on the configuration page. Otherwise the callback tells the merchant to reload the configuration page; the result is still stored for that shop.
+- IPv6 shop hosts are rejected by the hostname check. Friendly URLs must be on. Group accounts with more than 80 locations can show an empty list in Connect, and picks beyond 40 can fail.

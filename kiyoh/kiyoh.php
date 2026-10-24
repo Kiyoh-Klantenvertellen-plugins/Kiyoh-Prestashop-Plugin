@@ -1179,8 +1179,8 @@ class Kiyoh extends Module
                 return $this->l('Connected. Location ID and API key were saved for this shop.');
             case 'disconnected':
                 return $this->l('Disconnected. The Kiyoh-Connect session was revoked.');
-            case 'secret_missing':
-                return $this->l('Kiyoh-Connect signing is not configured on this server. Set KIYOH_CONNECT_HMAC_KEY and KIYOH_CONNECT_CLIENT_SECRET in the server environment (not in the module zip). Manual Location ID and API key still work.');
+            case 'shop_credential_missing':
+                return $this->l('Kiyoh-Connect did not return a shop credential. That secret is issued once and must already be stored for this shop. Manual Location ID and API key still work.');
             case 'shop_context':
                 return $this->l('Select one shop in the multistore header, then connect that shop.');
             case 'https_required':
@@ -1236,11 +1236,6 @@ class Kiyoh extends Module
         $html = '<div class="panel"><div class="panel-heading"><i class="icon-signin"></i> '
             . $this->l('Connect with Kiyoh / Klantenvertellen')
             . '</div><div class="panel-body"><p>' . $intro . '</p>';
-        if (!$status['configured']) {
-            $html .= '<div class="alert alert-warning">'
-                . $this->l('This server has no KIYOH_CONNECT_HMAC_KEY or KIYOH_CONNECT_CLIENT_SECRET. Those values are not part of the module download. Manual API settings still work.')
-                . '</div>';
-        }
         if ($status['linked']) {
             $html .= '<p><strong>' . $this->l('Connected') . '</strong> '
                 . htmlspecialchars($status['locationName'], ENT_QUOTES, 'UTF-8')
