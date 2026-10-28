@@ -1,7 +1,7 @@
 # PLUGIN_SPEC — Kiyoh Reviews for PrestaShop
 
 **Shape:** A (PrestaShop module) + B (Kiyoh review API and Kiyoh-Connect)
-**Owner:** Kiyoh plugins   **Version:** 1.4.1
+**Owner:** Kiyoh plugins   **Version:** 1.4.2
 
 ## Host
 - Platform: PrestaShop 1.7.0.0 through 9.2.0
