@@ -30,7 +30,7 @@ class Kiyoh extends Module
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.4.1';
+        $this->version = '1.4.2';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array(
@@ -1145,20 +1145,67 @@ class Kiyoh extends Module
                 $expected[] = $controllerToken;
             }
         }
+        $symfony = $this->symfonyUserToken();
+        if ($symfony !== '') {
+            $expected[] = $symfony;
+        }
         $employeeId = $this->adminEmployeeId();
         if ($employeeId > 0 && defined('_COOKIE_KEY_') && class_exists('Tab')) {
-            $legacy = KiyohAdminGate::legacyToken(
-                'AdminModules',
-                (int) Tab::getIdFromClassName('AdminModules'),
-                $employeeId,
-                (string) _COOKIE_KEY_
-            );
-            if ($legacy !== '') {
-                $expected[] = $legacy;
+            $cookieKey = (string) _COOKIE_KEY_;
+            // 1.7/8 use AdminModules. 8.2 and 9 install the modules tab as AdminModulesSf.
+            foreach (array('AdminModules', 'AdminModulesSf') as $tab) {
+                $legacy = KiyohAdminGate::legacyToken(
+                    $tab,
+                    (int) Tab::getIdFromClassName($tab),
+                    $employeeId,
+                    $cookieKey
+                );
+                if ($legacy !== '') {
+                    $expected[] = $legacy;
+                }
+            }
+            $employeeOnly = KiyohAdminGate::employeeToken($employeeId, $cookieKey);
+            if ($employeeOnly !== '') {
+                $expected[] = $employeeOnly;
             }
         }
 
         return $expected;
+    }
+
+    /**
+     * User CSRF token PrestaShop 9 checks on the Symfony configure route.
+     *
+     * Tools::getAdminTokenLite() reads the legacy employee first and throws
+     * when that object is missing, so it never reaches Tools::getAdminToken(),
+     * which is the call that returns this token.
+     *
+     * @return string
+     */
+    private function symfonyUserToken()
+    {
+        try {
+            if (!class_exists('PrestaShop\\PrestaShop\\Adapter\\SymfonyContainer')) {
+                return '';
+            }
+            $container = \PrestaShop\PrestaShop\Adapter\SymfonyContainer::getInstance();
+            if (!$container || !is_object($container) || !method_exists($container, 'has')) {
+                return '';
+            }
+            $serviceId = 'PrestaShopBundle\\Security\\Admin\\UserTokenManager';
+            if (!$container->has($serviceId)) {
+                return '';
+            }
+            $manager = $container->get($serviceId);
+            if (!is_object($manager) || !method_exists($manager, 'getSymfonyToken')) {
+                return '';
+            }
+            $token = $manager->getSymfonyToken();
+
+            return is_string($token) ? $token : '';
+        } catch (Throwable $e) {
+            return '';
+        }
     }
 
     /**
@@ -1431,8 +1478,8 @@ class Kiyoh extends Module
         }
         $html .= '<p><code>' . htmlspecialchars($status['redirect'] !== '' ? $status['redirect'] : $this->l('Return address is created when you connect.'), ENT_QUOTES, 'UTF-8') . '</code></p>';
         $html .= '<form method="post" action="' . $action . '" target="kiyoh-connect" data-kiyoh-connect="1" id="kiyoh-connect-form">'
-            . '<input type="hidden" name="token" value="' . $token . '">'
-            . '<input type="hidden" name="_token" value="' . $symfonyToken . '">'
+            . ($token !== '' ? '<input type="hidden" name="token" value="' . $token . '">' : '')
+            . ($symfonyToken !== '' ? '<input type="hidden" name="_token" value="' . $symfonyToken . '">' : '')
             . '<input type="hidden" name="kiyoh_connect_start" value="1">'
             . '<button type="submit" class="btn btn-primary" id="kiyoh-connect-start" formnovalidate>'
             . $this->l('Connect with Kiyoh / Klantenvertellen')
@@ -1440,8 +1487,8 @@ class Kiyoh extends Module
         $html .= $this->connectFormScript($form);
         if ($status['linked'] || $status['hasSession']) {
             $html .= '<form method="post" action="' . $action . '" data-kiyoh-connect="1" style="margin-top:12px">'
-                . '<input type="hidden" name="token" value="' . $token . '">'
-                . '<input type="hidden" name="_token" value="' . $symfonyToken . '">'
+                . ($token !== '' ? '<input type="hidden" name="token" value="' . $token . '">' : '')
+                . ($symfonyToken !== '' ? '<input type="hidden" name="_token" value="' . $symfonyToken . '">' : '')
                 . '<button type="submit" name="kiyoh_connect_disconnect" class="btn btn-default" formnovalidate>'
                 . $this->l('Disconnect')
                 . '</button></form>';
@@ -1460,22 +1507,41 @@ class Kiyoh extends Module
     {
         require_once dirname(__FILE__) . '/classes/KiyohAdminGate.php';
         $requestUri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
-        $action = KiyohAdminGate::configureAction(
-            $requestUri,
-            $this->publicRequestHost(),
-            $this->requestIsHttps(),
-            $this->name,
-            $this->getConfigureFormIndex()
-        );
-        $generated = $this->generatedAdminToken();
+        $scriptName = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
+        $pathInfo = isset($_SERVER['PATH_INFO']) ? (string) $_SERVER['PATH_INFO'] : '';
+        $queryString = isset($_SERVER['QUERY_STRING']) ? (string) $_SERVER['QUERY_STRING'] : '';
+        $action = KiyohAdminGate::configureRequestUri($requestUri, $scriptName, $pathInfo, $queryString, $this->name);
+        if ($action === '') {
+            $action = KiyohAdminGate::configureAction(
+                $requestUri,
+                $this->publicRequestHost(),
+                $this->requestIsHttps(),
+                $this->name,
+                $this->getConfigureFormIndex()
+            );
+        }
         $pageToken = KiyohAdminGate::pageToken($_GET);
-        $symfonyToken = $pageToken !== '' ? $pageToken : $generated;
-        $token = $generated !== '' ? $generated : $pageToken;
+        $symfony = $this->symfonyUserToken();
+        $legacy = $this->generatedAdminToken();
+        // On PrestaShop 9 getAdminTokenLite() is the user CSRF token, not the legacy hash.
+        if ($symfony !== '' && $legacy === $symfony) {
+            $legacy = '';
+            $employeeId = $this->adminEmployeeId();
+            if ($employeeId > 0 && defined('_COOKIE_KEY_') && class_exists('Tab')) {
+                $legacy = KiyohAdminGate::legacyToken(
+                    'AdminModules',
+                    (int) Tab::getIdFromClassName('AdminModules'),
+                    $employeeId,
+                    (string) _COOKIE_KEY_
+                );
+            }
+        }
+        $fields = KiyohAdminGate::formTokens($pageToken, $legacy, $symfony);
 
         return [
-            'action' => KiyohAdminGate::withAdminTokens($action, $token, $symfonyToken),
-            'token' => $token,
-            'symfonyToken' => $symfonyToken,
+            'action' => $action,
+            'token' => $fields['token'],
+            'symfonyToken' => $fields['symfonyToken'],
         ];
     }
 
@@ -1493,6 +1559,7 @@ class Kiyoh extends Module
                 'action' => $form['action'],
                 'token' => $form['token'],
                 'symfonyToken' => $form['symfonyToken'],
+                'module' => $this->name,
             ],
             JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES
         );
@@ -1500,7 +1567,7 @@ class Kiyoh extends Module
             return '';
         }
 
-        return '<script>(function(){var cfg=' . $config . ';var button=document.getElementById("kiyoh-connect-start");var form=document.getElementById("kiyoh-connect-form");if(!button||!form||!cfg){return;}button.addEventListener("click",function(event){event.preventDefault();var popup=window.open("","kiyoh-connect","width=480,height=720,scrollbars=yes");var body=new URLSearchParams();body.set("kiyoh_connect_start","1");body.set("kiyoh_connect_ajax","1");if(cfg.token){body.set("token",cfg.token);}if(cfg.symfonyToken){body.set("_token",cfg.symfonyToken);}fetch(cfg.action,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"},body:body.toString()}).then(function(response){return response.json();}).then(function(data){var url=data&&typeof data.authorizeUrl==="string"?data.authorizeUrl:"";if(url.indexOf("https://connect.kiyoh.com/authorize?")===0||url.indexOf("https://connect.klantenvertellen.nl/authorize?")===0){if(popup){popup.location=url;}else{window.location=url;}return;}var message=data&&typeof data.message==="string"?data.message:"Kiyoh-Connect could not start.";if(popup&&popup.document){popup.document.body.textContent=message;}else{window.alert(message);}}).catch(function(){if(popup&&!popup.closed){popup.close();}form.submit();});});})();</script>';
+        return '<script>(function(){var cfg=' . $config . ';var button=document.getElementById("kiyoh-connect-start");var form=document.getElementById("kiyoh-connect-form");if(!button||!form||!cfg){return;}button.addEventListener("click",function(event){event.preventDefault();var popup=window.open("","kiyoh-connect","width=480,height=720,scrollbars=yes");var body=new URLSearchParams();body.set("kiyoh_connect_start","1");body.set("kiyoh_connect_ajax","1");if(cfg.token){body.set("token",cfg.token);}if(cfg.symfonyToken){body.set("_token",cfg.symfonyToken);}var action=window.location.pathname+window.location.search;var marker="/configure/"+(cfg.module||"");if(marker.length<12||(action.indexOf(marker)===-1&&action.indexOf("configure="+(cfg.module||""))===-1)){action=cfg.action;}form.setAttribute("action",action);fetch(action,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"},body:body.toString()}).then(function(response){return response.json();}).then(function(data){var url=data&&typeof data.authorizeUrl==="string"?data.authorizeUrl:"";if(url.indexOf("https://connect.kiyoh.com/authorize?")===0||url.indexOf("https://connect.klantenvertellen.nl/authorize?")===0){if(popup){popup.location=url;}else{window.location=url;}return;}var message=data&&typeof data.message==="string"?data.message:"Kiyoh-Connect could not start.";if(popup&&popup.document){popup.document.body.textContent=message;}else{window.alert(message);}}).catch(function(){if(popup&&!popup.closed){popup.close();}form.submit();});});})();</script>';
     }
 
     /**

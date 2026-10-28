@@ -94,6 +94,8 @@ class KiyohAdminGate
     /**
      * Legacy AdminModules token used by PrestaShop 1.7 and 8.
      * PrestaShop 9's Tools::getAdminToken() no longer returns this value.
+     * On 8.2 and 9 the modules tab class is AdminModulesSf, so callers must
+     * try that name as well as AdminModules.
      */
     public static function legacyToken(string $tab, int $tabId, int $employeeId, string $cookieKey): string
     {
@@ -102,6 +104,69 @@ class KiyohAdminGate
         }
 
         return md5($cookieKey . $tab . $tabId . $employeeId);
+    }
+
+    /**
+     * Token PrestaShop 8's Symfony listener accepts in the query: md5(cookie key + employee id).
+     * It is not the AdminModules tab token.
+     */
+    public static function employeeToken(int $employeeId, string $cookieKey): string
+    {
+        if ($employeeId <= 0 || $cookieKey === '') {
+            return '';
+        }
+
+        return md5($cookieKey . $employeeId);
+    }
+
+    /**
+     * Hidden-field values for Connect.
+     *
+     * `_token` is only the Symfony user CSRF token. Putting the legacy md5 in
+     * `_token` makes PrestaShop 8's URL listener reject the request. The legacy
+     * value stays in `token`, which AdminModules::checkToken reads.
+     *
+     * @return array{token: string, symfonyToken: string}
+     */
+    public static function formTokens(string $pageToken, string $legacyToken, string $symfonyUserToken): array
+    {
+        $legacy = self::isTokenShape($legacyToken) ? $legacyToken : '';
+        $symfony = self::isTokenShape($symfonyUserToken) ? $symfonyUserToken : '';
+        if ($symfony === '' && self::isTokenShape($pageToken) && $pageToken !== $legacy) {
+            $symfony = $pageToken;
+        }
+        $token = $legacy !== '' ? $legacy : (self::isTokenShape($pageToken) ? $pageToken : $symfony);
+
+        return ['token' => $token, 'symfonyToken' => $symfony];
+    }
+
+    /**
+     * Path and query of the configure page that is already open.
+     *
+     * Keeps the host and scheme the browser used. A relative index.php action
+     * resolves against /configure/{module} and posts to a different route than
+     * the one whose token PrestaShop checked. When the route lives in PATH_INFO,
+     * REQUEST_URI alone is only /index.php.
+     */
+    public static function configureRequestUri(
+        string $requestUri,
+        string $scriptName,
+        string $pathInfo,
+        string $queryString,
+        string $module
+    ): string {
+        $uri = self::withQuery(self::safeRequestUri($requestUri), $queryString);
+        if ($uri !== '' && self::isConfigureUri($uri, $module)) {
+            return $uri;
+        }
+        $script = self::safeRequestUri($scriptName);
+        $path = self::safeRequestUri($pathInfo);
+        if ($script === '' || $path === '' || !self::isConfigureUri($path, $module)) {
+            return '';
+        }
+        $built = self::withQuery($script . $path, $queryString);
+
+        return self::isConfigureUri($built, $module) ? $built : '';
     }
 
     /**
@@ -238,5 +303,17 @@ class KiyohAdminGate
         }
 
         return $uri;
+    }
+
+    private static function withQuery(string $uri, string $queryString): string
+    {
+        if ($uri === '' || strpos($uri, '?') !== false || $queryString === '') {
+            return $uri;
+        }
+        if (strlen($queryString) > 4096 || preg_match('/[\x00-\x20\x7F\\\\]/', $queryString) === 1) {
+            return $uri;
+        }
+
+        return $uri . '?' . $queryString;
     }
 }
