@@ -1,7 +1,7 @@
 # PLUGIN_SPEC — Kiyoh Reviews for PrestaShop
 
 **Shape:** A (PrestaShop module) + B (Kiyoh review API and Kiyoh-Connect)
-**Owner:** Kiyoh plugins   **Version:** 1.4.0
+**Owner:** Kiyoh plugins   **Version:** 1.4.1
 
 ## Host
 - Platform: PrestaShop 1.7.0.0 through 9.2.0
@@ -35,7 +35,7 @@
 - Idempotency: register can be repeated. The shop secret is issued once; an unchanged return address reuses the stored credential and skips register. The authorization code is single-use; the pending PKCE record is deleted when `state` matches. Credentials overwrite `KIYOH_LOCATION_ID` and `KIYOH_API_KEY`. A second connect replaces the refresh token. Disconnect revokes the refresh token and keeps the shop credential.
 
 ## Permissions requested (and why)
-- Back-office employee who can configure modules, plus the `AdminModules` token on Connect and Disconnect. Stops another site from starting a sign-in or disconnecting the shop.
+- Back-office employee who can configure modules, plus the admin CSRF token on Connect and Disconnect (`token` on PrestaShop 1.7/8, `_token` on the Symfony configure page in 8/9). Stops another site from starting a sign-in or disconnecting the shop.
 - Outbound HTTPS to the two Connect issuers, the review API, and the configured Kiyoh Mobile URLs.
 - Scope `integration:connect` only. It is what Connect exchanges for one location's invite key.
 - Front route `/module/kiyoh/oauth` is public so Connect can redirect the browser back. It accepts only a `state` that an authenticated employee stored for this shop.
