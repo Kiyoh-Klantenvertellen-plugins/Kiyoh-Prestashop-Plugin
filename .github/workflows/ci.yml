@@ -21,6 +21,7 @@ jobs:
         run: |
           php tests/KiyohMobileHealthTest.php
           php tests/KiyohConnectTest.php
+          php tests/KiyohAdminGateTest.php
       - name: Preflight
         run: python3 scripts/preflight.py .
       - name: Build module zip

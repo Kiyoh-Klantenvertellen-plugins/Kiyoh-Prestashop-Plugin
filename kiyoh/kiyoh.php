@@ -30,7 +30,7 @@ class Kiyoh extends Module
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.4.0';
+        $this->version = '1.4.1';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array(
@@ -400,6 +400,10 @@ class Kiyoh extends Module
      */
     public function getContent()
     {
+        if (Tools::getValue('kiyoh_connect_ajax')) {
+            $this->emitConnectAjax();
+        }
+
         $output = '';
 
         if (!$this->isRegisteredInHook('actionCronJob')) {
@@ -1028,17 +1032,20 @@ class Kiyoh extends Module
      * Absolute action for the configuration form.
      *
      * PrestaShop 9 renders this page at
-     * /index.php/improve/modules/manage/action/configure/{module}. HelperForm's
-     * default action is the relative "index.php?controller=AdminModules", which
-     * the browser resolves against that path and posts to the wrong URL, so
-     * Save never reaches this module. PrestaShop 8.2 redirects that route to
-     * the legacy controller, and 1.7 never uses it, so those requests keep
-     * AdminController::$currentIndex.
+     * /index.php/improve/modules/manage/action/configure/{module}?_token=...
+     * HelperForm's default action is the relative "index.php?controller=AdminModules",
+     * which the browser resolves against that path and posts to the wrong URL.
+     * PrestaShop 8.2 redirects that route to the legacy controller, and 1.7 never
+     * uses it, so those requests keep AdminController::$currentIndex.
+     *
+     * The Symfony query string, including _token, stays on the action. HelperForm
+     * appends "&token=", so the action must already have a query.
      *
      * @return string
      */
     private function getConfigureFormIndex()
     {
+        require_once dirname(__FILE__) . '/classes/KiyohAdminGate.php';
         $legacy = AdminController::$currentIndex . '&configure=' . $this->name;
         $requestUri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
         $marker = '/configure/' . $this->name;
@@ -1046,20 +1053,47 @@ class Kiyoh extends Module
             return $legacy;
         }
 
-        $path = strtok($requestUri, '?');
-        if (!is_string($path) || $path === '') {
-            return $legacy;
+        return KiyohAdminGate::configureAction(
+            $requestUri,
+            $this->publicRequestHost(),
+            $this->requestIsHttps(),
+            $this->name,
+            $legacy
+        );
+    }
+
+    /**
+     * Host the browser used. X-Forwarded-Host may be a comma-separated list.
+     *
+     * @return string
+     */
+    private function publicRequestHost()
+    {
+        require_once dirname(__FILE__) . '/classes/KiyohAdminGate.php';
+        $forwarded = isset($_SERVER['HTTP_X_FORWARDED_HOST']) ? (string) $_SERVER['HTTP_X_FORWARDED_HOST'] : '';
+        $host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
+        $public = KiyohAdminGate::publicHost($forwarded, $host);
+        if ($public !== '') {
+            return $public;
+        }
+        $fallback = Tools::getHttpHost(false);
+
+        return is_string($fallback) ? $fallback : '';
+    }
+
+    /**
+     * HTTPS, including a tunnel that sends X-Forwarded-Proto as "https,http".
+     *
+     * @return bool
+     */
+    private function requestIsHttps()
+    {
+        require_once dirname(__FILE__) . '/classes/KiyohAdminGate.php';
+        if (KiyohAdminGate::requestIsHttps($_SERVER)) {
+            return true;
         }
 
-        $host = Tools::getHttpHost(false);
-        if (!is_string($host) || $host === '') {
-            return $legacy;
-        }
-
-        $scheme = Tools::usingSecureMode() ? 'https://' : 'http://';
-
-        // HelperForm appends "&token=", so the action must already have a query.
-        return $scheme . $host . $path . '?configure=' . $this->name;
+        return Tools::usingSecureMode();
     }
 
     /**
@@ -1078,35 +1112,129 @@ class Kiyoh extends Module
     }
 
     /**
-     * Employee session plus the AdminModules token. Both are required.
+     * The configure page was already authorized by PrestaShop.
+     * Accept the legacy AdminModules token and the Symfony _token.
      *
      * @return bool
      */
     private function isAdminRequestAuthentic()
     {
-        $employeeId = 0;
-        if (isset($this->context->employee) && $this->context->employee) {
-            $employeeId = (int) $this->context->employee->id;
-        }
-        if ($employeeId <= 0) {
-            return false;
-        }
-        $provided = Tools::getValue('token');
-        if (!is_string($provided) || $provided === '') {
-            return false;
-        }
-        $expected = Tools::getAdminTokenLite('AdminModules');
+        require_once dirname(__FILE__) . '/classes/KiyohAdminGate.php';
+        $provided = KiyohAdminGate::providedTokens($_GET, $_POST);
+        $expected = $this->expectedAdminTokens();
 
-        return is_string($expected) && $expected !== '' && hash_equals($expected, $provided);
+        return KiyohAdminGate::accepts($provided, $expected);
     }
 
     /**
+     * Tokens this shop would generate for the logged-in employee.
+     *
+     * @return list<string>
+     */
+    private function expectedAdminTokens()
+    {
+        require_once dirname(__FILE__) . '/classes/KiyohAdminGate.php';
+        $expected = [];
+        $generated = $this->generatedAdminToken();
+        if ($generated !== '') {
+            $expected[] = $generated;
+        }
+        if (isset($this->context->controller) && isset($this->context->controller->token)) {
+            $controllerToken = (string) $this->context->controller->token;
+            if ($controllerToken !== '') {
+                $expected[] = $controllerToken;
+            }
+        }
+        $employeeId = $this->adminEmployeeId();
+        if ($employeeId > 0 && defined('_COOKIE_KEY_') && class_exists('Tab')) {
+            $legacy = KiyohAdminGate::legacyToken(
+                'AdminModules',
+                (int) Tab::getIdFromClassName('AdminModules'),
+                $employeeId,
+                (string) _COOKIE_KEY_
+            );
+            if ($legacy !== '') {
+                $expected[] = $legacy;
+            }
+        }
+
+        return $expected;
+    }
+
+    /**
+     * Tools::getAdminTokenLite throws when the legacy employee is missing,
+     * and on PrestaShop 9 it returns the Symfony token instead of the legacy hash.
+     *
      * @return string
      */
-    private function startConnect()
+    private function generatedAdminToken()
+    {
+        try {
+            if (!isset($this->context->employee) || !$this->context->employee) {
+                $this->restoreAdminEmployee();
+            }
+            if (!isset($this->context->employee) || !$this->context->employee) {
+                return '';
+            }
+            $token = Tools::getAdminTokenLite('AdminModules');
+
+            return is_string($token) ? $token : '';
+        } catch (Throwable $e) {
+            return '';
+        }
+    }
+
+    /**
+     * @return int
+     */
+    private function adminEmployeeId()
+    {
+        if (isset($this->context->employee) && $this->context->employee && (int) $this->context->employee->id > 0) {
+            return (int) $this->context->employee->id;
+        }
+        $this->restoreAdminEmployee();
+        if (isset($this->context->employee) && $this->context->employee) {
+            return (int) $this->context->employee->id;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Symfony configure requests can leave Context->employee empty.
+     * The admin cookie still names the employee on 1.7 through 9.
+     *
+     * @return void
+     */
+    private function restoreAdminEmployee()
+    {
+        if (!isset($this->context->cookie) || !$this->context->cookie || !isset($this->context->cookie->id_employee)) {
+            return;
+        }
+        $employeeId = (int) $this->context->cookie->id_employee;
+        if ($employeeId <= 0 || !class_exists('Employee')) {
+            return;
+        }
+        try {
+            $employee = new Employee($employeeId);
+            if (Validate::isLoadedObject($employee)) {
+                $this->context->employee = $employee;
+            }
+        } catch (Throwable $e) {
+            return;
+        }
+    }
+
+    /**
+     * @return array{ok: bool, authorizeUrl?: string, message?: string, code?: string, detail?: string|null, retryAfter?: int|null}
+     */
+    private function connectAttempt()
     {
         if (!$this->isAdminRequestAuthentic()) {
-            return $this->displayError($this->l('The admin token is missing or expired. Reload this page and try again.'));
+            return [
+                'ok' => false,
+                'message' => $this->l('The admin token is missing or expired. Reload this page and try again.'),
+            ];
         }
         require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
         $platform = Configuration::get('KIYOH_PLATFORM');
@@ -1117,17 +1245,71 @@ class Kiyoh extends Module
         $issuer = KiyohConnect::issuerForPlatform($platform);
         $authorizeUrl = isset($result['authorizeUrl']) && is_string($result['authorizeUrl']) ? $result['authorizeUrl'] : '';
         if (empty($result['ok']) || $issuer === null || strpos($authorizeUrl, $issuer . '/authorize?') !== 0) {
+            $code = isset($result['code']) && is_string($result['code']) ? $result['code'] : 'network';
+            $retryAfter = isset($result['retryAfter']) ? (int) $result['retryAfter'] : null;
+
+            return [
+                'ok' => false,
+                'code' => $code,
+                'message' => $this->connectMessage($code, $retryAfter),
+                'detail' => isset($result['detail']) && is_string($result['detail']) ? $result['detail'] : null,
+                'retryAfter' => $retryAfter,
+            ];
+        }
+
+        return ['ok' => true, 'authorizeUrl' => $authorizeUrl];
+    }
+
+    /**
+     * @return string
+     */
+    private function startConnect()
+    {
+        $attempt = $this->connectAttempt();
+        if (!empty($attempt['ok']) && !empty($attempt['authorizeUrl'])) {
+            header('Referrer-Policy: no-referrer');
+            header('Cache-Control: no-store');
+            Tools::redirect($attempt['authorizeUrl']);
+
+            return '';
+        }
+        if (isset($attempt['code'])) {
             return $this->renderConnectResult(
-                isset($result['code']) && is_string($result['code']) ? $result['code'] : 'network',
-                isset($result['detail']) && is_string($result['detail']) ? $result['detail'] : null,
-                isset($result['retryAfter']) ? (int) $result['retryAfter'] : null
+                $attempt['code'],
+                isset($attempt['detail']) ? $attempt['detail'] : null,
+                isset($attempt['retryAfter']) ? $attempt['retryAfter'] : null
             );
         }
-        header('Referrer-Policy: no-referrer');
-        header('Cache-Control: no-store');
-        Tools::redirect($authorizeUrl);
 
-        return '';
+        return $this->displayError(
+            isset($attempt['message']) ? $attempt['message'] : $this->l('The admin token is missing or expired. Reload this page and try again.')
+        );
+    }
+
+    /**
+     * JSON for the configure page. The popup then navigates to the issuer.
+     * exit is required so the Symfony layout does not wrap the body.
+     *
+     * @return void
+     */
+    private function emitConnectAjax()
+    {
+        $attempt = $this->connectAttempt();
+        header('Content-Type: application/json; charset=utf-8');
+        header('X-Content-Type-Options: nosniff');
+        header('Cache-Control: no-store');
+        header('Referrer-Policy: no-referrer');
+        $payload = ['ok' => !empty($attempt['ok'])];
+        if (!empty($attempt['authorizeUrl']) && is_string($attempt['authorizeUrl'])) {
+            $payload['authorizeUrl'] = $attempt['authorizeUrl'];
+        }
+        if (empty($attempt['ok'])) {
+            $payload['message'] = isset($attempt['message']) && is_string($attempt['message'])
+                ? $attempt['message']
+                : $this->l('Kiyoh-Connect sign-in could not be completed.');
+        }
+        echo json_encode($payload, JSON_UNESCAPED_SLASHES);
+        exit;
     }
 
     /**
@@ -1230,8 +1412,10 @@ class Kiyoh extends Module
     {
         require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
         $status = KiyohConnectService::status();
-        $action = htmlspecialchars($this->getConfigureFormIndex(), ENT_QUOTES, 'UTF-8');
-        $token = htmlspecialchars((string) Tools::getAdminTokenLite('AdminModules'), ENT_QUOTES, 'UTF-8');
+        $form = $this->connectFormParts();
+        $action = htmlspecialchars($form['action'], ENT_QUOTES, 'UTF-8');
+        $token = htmlspecialchars($form['token'], ENT_QUOTES, 'UTF-8');
+        $symfonyToken = htmlspecialchars($form['symfonyToken'], ENT_QUOTES, 'UTF-8');
         $intro = $this->l('Sign in on Kiyoh-Connect. The saved platform chooses the issuer: Kiyoh.com uses connect.kiyoh.com, Klantenvertellen.nl uses connect.klantenvertellen.nl. Save the platform first. The button opens a popup. Manual Location ID and API key below remain the fallback for existing installs.');
         $html = '<div class="panel"><div class="panel-heading"><i class="icon-signin"></i> '
             . $this->l('Connect with Kiyoh / Klantenvertellen')
@@ -1246,15 +1430,19 @@ class Kiyoh extends Module
                 . ')</p>';
         }
         $html .= '<p><code>' . htmlspecialchars($status['redirect'] !== '' ? $status['redirect'] : $this->l('Return address is created when you connect.'), ENT_QUOTES, 'UTF-8') . '</code></p>';
-        $html .= '<form method="post" action="' . $action . '" target="kiyoh-connect" onsubmit="window.open(\'about:blank\',\'kiyoh-connect\',\'width=480,height=720,scrollbars=yes\');">'
+        $html .= '<form method="post" action="' . $action . '" target="kiyoh-connect" data-kiyoh-connect="1" id="kiyoh-connect-form">'
             . '<input type="hidden" name="token" value="' . $token . '">'
-            . '<button type="submit" name="kiyoh_connect_start" class="btn btn-primary">'
+            . '<input type="hidden" name="_token" value="' . $symfonyToken . '">'
+            . '<input type="hidden" name="kiyoh_connect_start" value="1">'
+            . '<button type="submit" class="btn btn-primary" id="kiyoh-connect-start" formnovalidate>'
             . $this->l('Connect with Kiyoh / Klantenvertellen')
             . '</button></form>';
+        $html .= $this->connectFormScript($form);
         if ($status['linked'] || $status['hasSession']) {
-            $html .= '<form method="post" action="' . $action . '" style="margin-top:12px">'
+            $html .= '<form method="post" action="' . $action . '" data-kiyoh-connect="1" style="margin-top:12px">'
                 . '<input type="hidden" name="token" value="' . $token . '">'
-                . '<button type="submit" name="kiyoh_connect_disconnect" class="btn btn-default">'
+                . '<input type="hidden" name="_token" value="' . $symfonyToken . '">'
+                . '<button type="submit" name="kiyoh_connect_disconnect" class="btn btn-default" formnovalidate>'
                 . $this->l('Disconnect')
                 . '</button></form>';
         }
@@ -1264,19 +1452,67 @@ class Kiyoh extends Module
     }
 
     /**
+     * Post Connect back to the configure URL that is already open.
+     *
+     * @return array{action: string, token: string, symfonyToken: string}
+     */
+    private function connectFormParts()
+    {
+        require_once dirname(__FILE__) . '/classes/KiyohAdminGate.php';
+        $requestUri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        $action = KiyohAdminGate::configureAction(
+            $requestUri,
+            $this->publicRequestHost(),
+            $this->requestIsHttps(),
+            $this->name,
+            $this->getConfigureFormIndex()
+        );
+        $generated = $this->generatedAdminToken();
+        $pageToken = KiyohAdminGate::pageToken($_GET);
+        $symfonyToken = $pageToken !== '' ? $pageToken : $generated;
+        $token = $generated !== '' ? $generated : $pageToken;
+
+        return [
+            'action' => KiyohAdminGate::withAdminTokens($action, $token, $symfonyToken),
+            'token' => $token,
+            'symfonyToken' => $symfonyToken,
+        ];
+    }
+
+    /**
+     * Ask the configure page for the issuer URL, then point the popup at it.
+     * The request stays in this tab, so the admin session cookie is sent.
+     *
+     * @param array{action: string, token: string, symfonyToken: string} $form
+     * @return string
+     */
+    private function connectFormScript(array $form)
+    {
+        $config = json_encode(
+            [
+                'action' => $form['action'],
+                'token' => $form['token'],
+                'symfonyToken' => $form['symfonyToken'],
+            ],
+            JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES
+        );
+        if (!is_string($config)) {
+            return '';
+        }
+
+        return '<script>(function(){var cfg=' . $config . ';var button=document.getElementById("kiyoh-connect-start");var form=document.getElementById("kiyoh-connect-form");if(!button||!form||!cfg){return;}button.addEventListener("click",function(event){event.preventDefault();var popup=window.open("","kiyoh-connect","width=480,height=720,scrollbars=yes");var body=new URLSearchParams();body.set("kiyoh_connect_start","1");body.set("kiyoh_connect_ajax","1");if(cfg.token){body.set("token",cfg.token);}if(cfg.symfonyToken){body.set("_token",cfg.symfonyToken);}fetch(cfg.action,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"},body:body.toString()}).then(function(response){return response.json();}).then(function(data){var url=data&&typeof data.authorizeUrl==="string"?data.authorizeUrl:"";if(url.indexOf("https://connect.kiyoh.com/authorize?")===0||url.indexOf("https://connect.klantenvertellen.nl/authorize?")===0){if(popup){popup.location=url;}else{window.location=url;}return;}var message=data&&typeof data.message==="string"?data.message:"Kiyoh-Connect could not start.";if(popup&&popup.document){popup.document.body.textContent=message;}else{window.alert(message);}}).catch(function(){if(popup&&!popup.closed){popup.close();}form.submit();});});})();</script>';
+    }
+
+    /**
      * HTTPS module-configuration URL on the shop host, including the admin token.
      *
      * @return string
      */
     private function absoluteAdminReturn()
     {
-        $index = $this->getConfigureFormIndex();
-        $token = Tools::getAdminTokenLite('AdminModules');
-        if (!is_string($token) || $token === '') {
+        $index = $this->connectFormParts()['action'];
+        if ($index === '') {
             return '';
-        }
-        if (strpos($index, 'token=') === false) {
-            $index .= (strpos($index, '?') === false ? '?' : '&') . 'token=' . rawurlencode($token);
         }
         $shopHost = '';
         if (isset($this->context->shop)) {
@@ -1284,11 +1520,11 @@ class Kiyoh extends Module
             $plain = isset($this->context->shop->domain) ? trim((string) $this->context->shop->domain) : '';
             $shopHost = $ssl !== '' ? $ssl : $plain;
         }
-        $requestHost = Tools::getHttpHost(false);
-        if (!is_string($requestHost) || $shopHost === '' || strcasecmp($requestHost, $shopHost) !== 0) {
+        $requestHost = $this->publicRequestHost();
+        if ($requestHost === '' || $shopHost === '' || !$this->adminHostsMatch($requestHost, $shopHost)) {
             return '';
         }
-        if (!Tools::usingSecureMode()) {
+        if (!$this->requestIsHttps()) {
             return '';
         }
         if (preg_match('#^https://#i', $index)) {
@@ -1304,6 +1540,26 @@ class Kiyoh extends Module
         }
 
         return 'https://' . $shopHost . $dir . '/' . ltrim($index, '/');
+    }
+
+    /**
+     * Shop domain and the request host, ignoring a default port on the request.
+     *
+     * @param string $requestHost
+     * @param string $shopHost
+     * @return bool
+     */
+    private function adminHostsMatch($requestHost, $shopHost)
+    {
+        $request = strtolower($requestHost);
+        $shop = strtolower($shopHost);
+        if ($request === $shop) {
+            return true;
+        }
+        $requestName = preg_replace('/:(?:80|443)$/', '', $request);
+        $shopName = preg_replace('/:(?:80|443)$/', '', $shop);
+
+        return is_string($requestName) && $requestName !== '' && $requestName === $shopName;
     }
 
     /**

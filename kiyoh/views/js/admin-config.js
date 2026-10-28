@@ -314,6 +314,9 @@ function validateForm() {
 
 // Attach form validation to submit
 $(document).on('submit', 'form', function(e) {
+    if ($(this).is('[data-kiyoh-connect]')) {
+        return;
+    }
     if (!validateForm()) {
         e.preventDefault();
         return false;
