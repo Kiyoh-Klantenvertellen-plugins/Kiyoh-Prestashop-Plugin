@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: curl, mbstring
+          coverage: none
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Health and Connect tests
+        run: |
+          php tests/KiyohMobileHealthTest.php
+          php tests/KiyohConnectTest.php
+      - name: Preflight
+        run: python3 scripts/preflight.py .
+      - name: Build module zip
+        run: bash scripts/build-release.sh dist/kiyoh.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kiyoh-module
+          path: dist/kiyoh.zip
+          if-no-files-found: error

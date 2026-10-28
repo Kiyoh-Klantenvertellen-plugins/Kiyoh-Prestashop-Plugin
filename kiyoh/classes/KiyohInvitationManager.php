@@ -51,6 +51,7 @@ class KiyohInvitationManager
      */
     public function sendInvitation(Order $order): array
     {
+        $attemptedInviteApi = false;
         try {
             // Check if invitation should be sent
             if (!$this->shouldSendInvitation($order)) {
@@ -76,12 +77,15 @@ class KiyohInvitationManager
             }
 
             // Send invitation via API
+            $attemptedInviteApi = true;
             $apiResponse = $this->apiClient->sendInvitation($invitationData->toApiArray());
+            $inviteHttpStatus = $this->apiClient->getLastHttpStatus();
             
             // Record invitation in database
             $this->recordInvitation($order, $invitationData, 'sent', $apiResponse);
             
             $this->logSuccess('sendInvitation', $order->id, $invitationData->email);
+            $this->reportInviteHealth($order, true, null, $inviteHttpStatus);
             
             return [
                 'success' => true,
@@ -101,6 +105,8 @@ class KiyohInvitationManager
             }
             
             $this->logError('sendInvitation', $e->getMessage(), $order->id);
+            $inviteHttpStatus = $attemptedInviteApi ? $this->apiClient->getLastHttpStatus() : null;
+            $this->reportInviteHealth($order, false, $e->getMessage(), $inviteHttpStatus);
             
             return [
                 'success' => false,
@@ -410,6 +416,29 @@ class KiyohInvitationManager
     }
 
     /**
+     * Report invite health without changing the invitation result.
+     *
+     * @param Order $order
+     * @param bool $sent
+     * @param string|null $errorMessage
+     * @param int|null $httpStatus
+     * @return void
+     */
+    private function reportInviteHealth(Order $order, bool $sent, ?string $errorMessage, ?int $httpStatus): void
+    {
+        try {
+            require_once dirname(__FILE__) . '/KiyohMobileHealthReporter.php';
+            KiyohMobileHealthReporter::noteInvite((int) $order->id_shop, $sent, $errorMessage, $httpStatus);
+        } catch (Throwable $e) {
+            try {
+                $this->logError('reportInviteHealth', $e->getMessage(), (int) $order->id);
+            } catch (Throwable $ignored) {
+                // Health reporting must not change the invitation result.
+            }
+        }
+    }
+
+    /**
      * Sync order products before sending invitation to prevent PRODUCT_NOT_FOUND errors
      *
      * @param Order $order PrestaShop order object
@@ -429,7 +458,7 @@ class KiyohInvitationManager
             $syncManager = new KiyohProductSyncManager($this->apiClient);
             foreach ($order->getProducts() as $product) {
                 $productId = (int)$product['product_id'];
-                $syncManager->syncSingleProduct($productId);
+                $syncManager->syncSingleProduct($productId, false);
             }
         } catch (Exception $e) {
             $this->logError('syncProductsBeforeInvitation', $e->getMessage(), $order->id);

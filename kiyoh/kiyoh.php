@@ -30,7 +30,7 @@ class Kiyoh extends Module
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.2.0';
+        $this->version = '1.4.0';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array(
@@ -112,6 +112,8 @@ class Kiyoh extends Module
      */
     public function uninstall()
     {
+        $this->revokeConnectOnUninstall();
+
         return parent::uninstall() &&
             $this->uninstallDb() &&
             $this->uninstallConfiguration() &&
@@ -213,6 +215,7 @@ class Kiyoh extends Module
             'KIYOH_PLATFORM' => 'kiyoh',
             'KIYOH_LOCATION_ID' => '',
             'KIYOH_API_KEY' => '',
+            'KIYOH_MOBILE_URLS' => 'https://kiyoh-mobile.com',
             'KIYOH_AUTO_SYNC' => true,
             'KIYOH_EXCLUDED_TYPES' => '',
             'KIYOH_EXCLUDED_CODES' => '',
@@ -232,6 +235,13 @@ class Kiyoh extends Module
             }
         }
 
+        require_once dirname(__FILE__) . '/classes/KiyohMobileHealthReporter.php';
+        KiyohMobileHealthReporter::ensureCronToken();
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        if (!KiyohConnectService::ensureEncryptionKey()) {
+            return false;
+        }
+
         return true;
     }
 
@@ -245,6 +255,9 @@ class Kiyoh extends Module
             'KIYOH_PLATFORM',
             'KIYOH_LOCATION_ID',
             'KIYOH_API_KEY',
+            'KIYOH_MOBILE_URLS',
+            'KIYOH_HEALTH_STATE',
+            'KIYOH_CRON_TOKEN',
             'KIYOH_AUTO_SYNC',
             'KIYOH_EXCLUDED_TYPES',
             'KIYOH_EXCLUDED_CODES',
@@ -257,6 +270,9 @@ class Kiyoh extends Module
             'KIYOH_LANGUAGE_AUTO',
             'KIYOH_FALLBACK_LANGUAGE',
         );
+
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $config = array_merge($config, KiyohConnectService::configurationKeys());
 
         foreach ($config as $key) {
             if (!Configuration::deleteByName($key)) {
@@ -356,24 +372,27 @@ class Kiyoh extends Module
     }
 
     /**
-     * Hook: Cron Job
+     * Hook: Cron Job (PrestaShop cronjobs module).
+     *
+     * Republishes Kiyoh Mobile health when the payload changed or the last
+     * accepted report is older than 24 hours. Invite scheduling is unchanged.
      */
     public function hookActionCronJob($params)
     {
-        if (!Configuration::get('KIYOH_ENABLED')) {
-            return;
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohMobileHealthReporter.php';
+            KiyohMobileHealthReporter::ensureCronToken();
+            KiyohMobileHealthReporter::publishDueReports();
+        } catch (Throwable $e) {
+            PrestaShopLogger::addLog(
+                'Kiyoh: health cron failed: ' . $e->getMessage(),
+                3,
+                null,
+                'Kiyoh',
+                null,
+                true
+            );
         }
-
-        // Cron functionality will be implemented in task 6
-        // For now, just log that the hook was triggered
-        PrestaShopLogger::addLog(
-            'Kiyoh: Cron job hook triggered',
-            1,
-            null,
-            'Kiyoh',
-            null,
-            true
-        );
     }
 
     /**
@@ -382,12 +401,30 @@ class Kiyoh extends Module
     public function getContent()
     {
         $output = '';
-        
+
+        if (!$this->isRegisteredInHook('actionCronJob')) {
+            $this->registerHook('actionCronJob');
+        }
+
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $flash = KiyohConnectService::pullFlash();
+        if ($flash['code'] !== '') {
+            $output .= $this->renderConnectResult($flash['code'], null, $flash['retryAfter']);
+        }
+
+        if (Tools::isSubmit('kiyoh_connect_start')) {
+            $output .= $this->startConnect();
+        }
+
+        if (Tools::isSubmit('kiyoh_connect_disconnect')) {
+            $output .= $this->disconnectConnect();
+        }
+
         // Handle bulk sync request
         if (Tools::isSubmit('bulk_sync')) {
             $output .= $this->processBulkSync();
         }
-        
+
         return $output . $this->getBasicConfigurationForm();
     }
 
@@ -448,7 +485,7 @@ class Kiyoh extends Module
             $output .= $this->testApiConnection();
         }
 
-        return $output . $this->displayForm();
+        return $output . $this->renderConnectPanel() . $this->displayForm();
     }
 
     /**
@@ -481,6 +518,16 @@ class Kiyoh extends Module
             $errors[] = $this->l('Max products must be between 1 and 10');
         }
 
+        require_once dirname(__FILE__) . '/classes/KiyohMobileHealth.php';
+        $mobileUrlsRaw = Tools::getValue('KIYOH_MOBILE_URLS');
+        if (!is_string($mobileUrlsRaw)) {
+            $mobileUrlsRaw = '';
+        }
+        $parsedMobileUrls = KiyohMobileHealth::parseBaseUrls($mobileUrlsRaw, KiyohMobileHealth::DEFAULT_URLS);
+        if (trim($mobileUrlsRaw) !== '' && $parsedMobileUrls['invalid'] !== []) {
+            $errors[] = $this->l('Kiyoh Mobile URL(s) must be a comma-separated list of http(s) base URLs.');
+        }
+
         if (!empty($errors)) {
             return $this->displayError(implode('<br>', $errors));
         }
@@ -489,11 +536,16 @@ class Kiyoh extends Module
         $triggerStatus = Tools::getValue('KIYOH_TRIGGER_STATUS');
         $excludedGroups = Tools::getValue('KIYOH_EXCLUDED_GROUPS');
         $excludedTypes = Tools::getValue('KIYOH_EXCLUDED_TYPES');
+        $previousLocationId = Configuration::get('KIYOH_LOCATION_ID');
+        $previousApiKey = Configuration::get('KIYOH_API_KEY');
+        $credentialsChanged = (string) $previousLocationId !== $kiyoh_location_id
+            || (string) $previousApiKey !== $kiyoh_api_key;
 
         Configuration::updateValue('KIYOH_ENABLED', (int)Tools::getValue('KIYOH_ENABLED'));
         Configuration::updateValue('KIYOH_PLATFORM', strval(Tools::getValue('KIYOH_PLATFORM')));
         Configuration::updateValue('KIYOH_LOCATION_ID', $kiyoh_location_id);
         Configuration::updateValue('KIYOH_API_KEY', $kiyoh_api_key);
+        Configuration::updateValue('KIYOH_MOBILE_URLS', implode(',', $parsedMobileUrls['urls']));
         Configuration::updateValue('KIYOH_AUTO_SYNC', (int)Tools::getValue('KIYOH_AUTO_SYNC'));
         Configuration::updateValue('KIYOH_EXCLUDED_TYPES', is_array($excludedTypes) ? implode(',', $excludedTypes) : '');
         Configuration::updateValue('KIYOH_EXCLUDED_CODES', strval(Tools::getValue('KIYOH_EXCLUDED_CODES')));
@@ -505,8 +557,47 @@ class Kiyoh extends Module
         Configuration::updateValue('KIYOH_EXCLUDED_GROUPS', is_array($excludedGroups) ? implode(',', $excludedGroups) : '');
         Configuration::updateValue('KIYOH_LANGUAGE_AUTO', (int)Tools::getValue('KIYOH_LANGUAGE_AUTO'));
         Configuration::updateValue('KIYOH_FALLBACK_LANGUAGE', strval(Tools::getValue('KIYOH_FALLBACK_LANGUAGE')));
+        if ($credentialsChanged) {
+            require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+            KiyohConnectService::markManualCredentials();
+        }
 
-        return $this->displayConfirmation($this->l('Settings updated'));
+        $output = $this->displayConfirmation($this->l('Settings updated'));
+        $connectionError = $this->reportHealthAfterConfigSave($credentialsChanged);
+        if ($connectionError !== '') {
+            $output .= $this->displayWarning(
+                $this->l('Settings saved, but the API connection test failed: ')
+                . htmlspecialchars($connectionError, ENT_QUOTES, 'UTF-8')
+            );
+        }
+
+        return $output;
+    }
+
+    /**
+     * Best-effort Kiyoh Mobile health report after a successful save.
+     *
+     * @param bool $credentialsChanged
+     * @return string
+     */
+    private function reportHealthAfterConfigSave($credentialsChanged)
+    {
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohMobileHealthReporter.php';
+
+            return KiyohMobileHealthReporter::noteConfigurationSaved((bool) $credentialsChanged);
+        } catch (Throwable $e) {
+            PrestaShopLogger::addLog(
+                'Kiyoh: health report after save failed: ' . $e->getMessage(),
+                2,
+                null,
+                'Kiyoh',
+                null,
+                true
+            );
+
+            return '';
+        }
     }
 
     /**
@@ -557,18 +648,45 @@ class Kiyoh extends Module
             $result = $apiClient->testConnection();
             
             if ($result['success']) {
+                $this->reportConnectionResult(true, null);
                 return $this->displayConfirmation(
                     $this->l('API connection successful!') . ' (' . 
                     $result['platform'] . ' - ' . $result['location_id'] . ')'
                 );
             } else {
+                $this->reportConnectionResult(false, $result['message']);
                 return $this->displayError(
                     $this->l('API connection failed: ') . $result['message']
                 );
             }
         } catch (Exception $e) {
+            $this->reportConnectionResult(false, $e->getMessage());
             return $this->displayError(
                 $this->l('API connection test failed: ') . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Update Kiyoh Mobile connection health from the Test Connection button.
+     *
+     * @param bool $success
+     * @param string|null $errorMessage
+     * @return void
+     */
+    private function reportConnectionResult($success, $errorMessage)
+    {
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohMobileHealthReporter.php';
+            KiyohMobileHealthReporter::noteConnectionResult((bool) $success, $errorMessage);
+        } catch (Throwable $e) {
+            PrestaShopLogger::addLog(
+                'Kiyoh: connection health report failed: ' . $e->getMessage(),
+                2,
+                null,
+                'Kiyoh',
+                null,
+                true
             );
         }
     }
@@ -623,7 +741,7 @@ class Kiyoh extends Module
                     'name' => 'KIYOH_LOCATION_ID',
                     'size' => 20,
                     'required' => true,
-                    'desc' => $this->l('Your Kiyoh/Klantenvertellen Location ID'),
+                    'desc' => $this->l('Filled in when you connect, or type the Location ID yourself. Manual values stay available for existing installs.'),
                 ),
                 array(
                     'type' => 'text',
@@ -631,7 +749,20 @@ class Kiyoh extends Module
                     'name' => 'KIYOH_API_KEY',
                     'size' => 50,
                     'required' => true,
-                    'desc' => $this->l('Your Kiyoh/Klantenvertellen API Key (X-Publication-Api-Token)'),
+                    'desc' => $this->l('Filled in from Connect (invite API key), or type an API key yourself. This is the fallback for existing installs.'),
+                ),
+                array(
+                    'type' => 'text',
+                    'label' => $this->l('Kiyoh Mobile URL(s)'),
+                    'name' => 'KIYOH_MOBILE_URLS',
+                    'size' => 80,
+                    'desc' => $this->l('Comma-separated Kiyoh Mobile base URLs. Health is posted to each one. Default: https://kiyoh-mobile.com. Add https://kiyohmobileui-staging.up.railway.app to report to staging as well.'),
+                ),
+                array(
+                    'type' => 'html',
+                    'label' => $this->l('Daily health cron'),
+                    'name' => 'KIYOH_CRON_URL',
+                    'html_content' => $this->renderCronHelp(),
                 ),
             ),
             'buttons' => array(
@@ -848,6 +979,12 @@ class Kiyoh extends Module
         $helper->fields_value['KIYOH_PLATFORM'] = Configuration::get('KIYOH_PLATFORM');
         $helper->fields_value['KIYOH_LOCATION_ID'] = Configuration::get('KIYOH_LOCATION_ID');
         $helper->fields_value['KIYOH_API_KEY'] = Configuration::get('KIYOH_API_KEY');
+        $mobileUrls = Configuration::get('KIYOH_MOBILE_URLS');
+        if (!is_string($mobileUrls) || trim($mobileUrls) === '') {
+            $mobileUrls = 'https://kiyoh-mobile.com';
+        }
+        $helper->fields_value['KIYOH_MOBILE_URLS'] = $mobileUrls;
+        $helper->fields_value['KIYOH_CRON_URL'] = '';
         $helper->fields_value['KIYOH_AUTO_SYNC'] = Configuration::get('KIYOH_AUTO_SYNC');
         $helper->fields_value['KIYOH_EXCLUDED_TYPES[]'] = !empty($excludedTypes) ? explode(',', $excludedTypes) : array();
         $helper->fields_value['KIYOH_EXCLUDED_CODES'] = Configuration::get('KIYOH_EXCLUDED_CODES');
@@ -861,6 +998,30 @@ class Kiyoh extends Module
         $helper->fields_value['KIYOH_FALLBACK_LANGUAGE'] = Configuration::get('KIYOH_FALLBACK_LANGUAGE');
 
         return $helper->generateForm($fields_form);
+    }
+
+    /**
+     * Explain the daily health URL. The token is created the first time this is shown.
+     *
+     * @return string
+     */
+    private function renderCronHelp()
+    {
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohMobileHealthReporter.php';
+            $url = KiyohMobileHealthReporter::cronUrl();
+        } catch (Throwable $e) {
+            $url = '';
+        }
+
+        $intro = $this->l('Schedule this URL once a day, or enable the PrestaShop cronjobs module. The report is sent again when shop health changed, or when the last accepted report is older than 24 hours. A failed report never blocks checkout or order updates.');
+        if ($url === '') {
+            return '<p>' . $intro . '</p>';
+        }
+
+        $safe = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
+
+        return '<p>' . $intro . '</p><p><code>' . $safe . '</code></p>';
     }
 
     /**
@@ -899,6 +1060,250 @@ class Kiyoh extends Module
 
         // HelperForm appends "&token=", so the action must already have a query.
         return $scheme . $host . $path . '?configure=' . $this->name;
+    }
+
+    /**
+     * Ask Connect to drop this shop's registration before local data is deleted.
+     *
+     * @return void
+     */
+    private function revokeConnectOnUninstall()
+    {
+        try {
+            require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+            KiyohConnectService::revokeBeforeUninstall();
+        } catch (Throwable $e) {
+            PrestaShopLogger::addLog('Kiyoh Connect: uninstall revoke failed', 2, null, 'Kiyoh', null, true);
+        }
+    }
+
+    /**
+     * Employee session plus the AdminModules token. Both are required.
+     *
+     * @return bool
+     */
+    private function isAdminRequestAuthentic()
+    {
+        $employeeId = 0;
+        if (isset($this->context->employee) && $this->context->employee) {
+            $employeeId = (int) $this->context->employee->id;
+        }
+        if ($employeeId <= 0) {
+            return false;
+        }
+        $provided = Tools::getValue('token');
+        if (!is_string($provided) || $provided === '') {
+            return false;
+        }
+        $expected = Tools::getAdminTokenLite('AdminModules');
+
+        return is_string($expected) && $expected !== '' && hash_equals($expected, $provided);
+    }
+
+    /**
+     * @return string
+     */
+    private function startConnect()
+    {
+        if (!$this->isAdminRequestAuthentic()) {
+            return $this->displayError($this->l('The admin token is missing or expired. Reload this page and try again.'));
+        }
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $platform = Configuration::get('KIYOH_PLATFORM');
+        if (!is_string($platform)) {
+            $platform = '';
+        }
+        $result = KiyohConnectService::begin($platform, $this->absoluteAdminReturn());
+        $issuer = KiyohConnect::issuerForPlatform($platform);
+        $authorizeUrl = isset($result['authorizeUrl']) && is_string($result['authorizeUrl']) ? $result['authorizeUrl'] : '';
+        if (empty($result['ok']) || $issuer === null || strpos($authorizeUrl, $issuer . '/authorize?') !== 0) {
+            return $this->renderConnectResult(
+                isset($result['code']) && is_string($result['code']) ? $result['code'] : 'network',
+                isset($result['detail']) && is_string($result['detail']) ? $result['detail'] : null,
+                isset($result['retryAfter']) ? (int) $result['retryAfter'] : null
+            );
+        }
+        header('Referrer-Policy: no-referrer');
+        header('Cache-Control: no-store');
+        Tools::redirect($authorizeUrl);
+
+        return '';
+    }
+
+    /**
+     * @return string
+     */
+    private function disconnectConnect()
+    {
+        if (!$this->isAdminRequestAuthentic()) {
+            return $this->displayError($this->l('The admin token is missing or expired. Reload this page and try again.'));
+        }
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $result = KiyohConnectService::disconnect();
+
+        return $this->renderConnectResult(
+            isset($result['code']) && is_string($result['code']) ? $result['code'] : 'network',
+            isset($result['detail']) && is_string($result['detail']) ? $result['detail'] : null,
+            isset($result['retryAfter']) ? (int) $result['retryAfter'] : null
+        );
+    }
+
+    /**
+     * @param string $code
+     * @param string|null $detail
+     * @param int|null $retryAfter
+     * @return string
+     */
+    private function renderConnectResult($code, $detail, $retryAfter)
+    {
+        $message = $this->connectMessage($code, $retryAfter);
+        if (is_string($detail) && preg_match('/^[a-z0-9_]{1,40}$/', $detail)) {
+            $message .= ' (' . $detail . ')';
+        }
+        if ($code === 'connected' || $code === 'disconnected') {
+            return $this->displayConfirmation($message);
+        }
+
+        return $this->displayError($message);
+    }
+
+    /**
+     * @param string $code
+     * @param int|null $retryAfter
+     * @return string
+     */
+    private function connectMessage($code, $retryAfter)
+    {
+        switch ($code) {
+            case 'connected':
+                return $this->l('Connected. Location ID and API key were saved for this shop.');
+            case 'disconnected':
+                return $this->l('Disconnected. The Kiyoh-Connect session was revoked.');
+            case 'shop_credential_missing':
+                return $this->l('Kiyoh-Connect did not return a shop credential. That secret is issued once and must already be stored for this shop. Manual Location ID and API key still work.');
+            case 'shop_context':
+                return $this->l('Select one shop in the multistore header, then connect that shop.');
+            case 'https_required':
+                return $this->l('This shop needs a public HTTPS domain before it can use Kiyoh-Connect.');
+            case 'platform':
+                return $this->l('Save the platform as Kiyoh.com or Klantenvertellen.nl, then connect.');
+            case 'admin_return':
+                return $this->l('Open this configuration page over HTTPS on the shop domain, then connect.');
+            case 'register_failed':
+                return $this->l('Kiyoh-Connect rejected the shop registration.');
+            case 'access_denied':
+                return $this->l('Sign-in was cancelled.');
+            case 'state_mismatch':
+            case 'state_expired':
+            case 'no_pending':
+                return $this->l('This sign-in session is no longer valid. Start Connect again.');
+            case 'token_failed':
+                return $this->l('Kiyoh-Connect did not return a session. Start Connect again.');
+            case 'credentials_failed':
+                return $this->l('Signed in, but the location credentials could not be read. Use Disconnect, then try again.');
+            case 'tenant_mismatch':
+                return $this->l('The account tenant does not match the platform selected for this shop. No credentials were saved.');
+            case 'encryption_failed':
+                return $this->l('The Connect session could not be encrypted, so nothing was saved.');
+            case 'revoke_failed':
+                return $this->l('Kiyoh-Connect did not revoke the session. Local credentials were left in place.');
+            case 'rate_limited':
+                $seconds = (int) $retryAfter;
+                if ($seconds < 1) {
+                    $seconds = 1;
+                }
+
+                return sprintf($this->l('Kiyoh-Connect asked this shop to wait %d seconds before trying again.'), $seconds);
+            case 'network':
+                return $this->l('Kiyoh-Connect could not be reached.');
+            default:
+                return $this->l('Kiyoh-Connect sign-in could not be completed.');
+        }
+    }
+
+    /**
+     * Connect controls sit above the manual settings. The saved platform picks the issuer.
+     *
+     * @return string
+     */
+    private function renderConnectPanel()
+    {
+        require_once dirname(__FILE__) . '/classes/KiyohConnectService.php';
+        $status = KiyohConnectService::status();
+        $action = htmlspecialchars($this->getConfigureFormIndex(), ENT_QUOTES, 'UTF-8');
+        $token = htmlspecialchars((string) Tools::getAdminTokenLite('AdminModules'), ENT_QUOTES, 'UTF-8');
+        $intro = $this->l('Sign in on Kiyoh-Connect. The saved platform chooses the issuer: Kiyoh.com uses connect.kiyoh.com, Klantenvertellen.nl uses connect.klantenvertellen.nl. Save the platform first. The button opens a popup. Manual Location ID and API key below remain the fallback for existing installs.');
+        $html = '<div class="panel"><div class="panel-heading"><i class="icon-signin"></i> '
+            . $this->l('Connect with Kiyoh / Klantenvertellen')
+            . '</div><div class="panel-body"><p>' . $intro . '</p>';
+        if ($status['linked']) {
+            $html .= '<p><strong>' . $this->l('Connected') . '</strong> '
+                . htmlspecialchars($status['locationName'], ENT_QUOTES, 'UTF-8')
+                . ' (' . $this->l('location') . ' '
+                . htmlspecialchars($status['locationId'], ENT_QUOTES, 'UTF-8')
+                . ', ' . $this->l('tenant') . ' '
+                . htmlspecialchars($status['tenantId'], ENT_QUOTES, 'UTF-8')
+                . ')</p>';
+        }
+        $html .= '<p><code>' . htmlspecialchars($status['redirect'] !== '' ? $status['redirect'] : $this->l('Return address is created when you connect.'), ENT_QUOTES, 'UTF-8') . '</code></p>';
+        $html .= '<form method="post" action="' . $action . '" target="kiyoh-connect" onsubmit="window.open(\'about:blank\',\'kiyoh-connect\',\'width=480,height=720,scrollbars=yes\');">'
+            . '<input type="hidden" name="token" value="' . $token . '">'
+            . '<button type="submit" name="kiyoh_connect_start" class="btn btn-primary">'
+            . $this->l('Connect with Kiyoh / Klantenvertellen')
+            . '</button></form>';
+        if ($status['linked'] || $status['hasSession']) {
+            $html .= '<form method="post" action="' . $action . '" style="margin-top:12px">'
+                . '<input type="hidden" name="token" value="' . $token . '">'
+                . '<button type="submit" name="kiyoh_connect_disconnect" class="btn btn-default">'
+                . $this->l('Disconnect')
+                . '</button></form>';
+        }
+        $html .= '</div></div>';
+
+        return $html;
+    }
+
+    /**
+     * HTTPS module-configuration URL on the shop host, including the admin token.
+     *
+     * @return string
+     */
+    private function absoluteAdminReturn()
+    {
+        $index = $this->getConfigureFormIndex();
+        $token = Tools::getAdminTokenLite('AdminModules');
+        if (!is_string($token) || $token === '') {
+            return '';
+        }
+        if (strpos($index, 'token=') === false) {
+            $index .= (strpos($index, '?') === false ? '?' : '&') . 'token=' . rawurlencode($token);
+        }
+        $shopHost = '';
+        if (isset($this->context->shop)) {
+            $ssl = isset($this->context->shop->domain_ssl) ? trim((string) $this->context->shop->domain_ssl) : '';
+            $plain = isset($this->context->shop->domain) ? trim((string) $this->context->shop->domain) : '';
+            $shopHost = $ssl !== '' ? $ssl : $plain;
+        }
+        $requestHost = Tools::getHttpHost(false);
+        if (!is_string($requestHost) || $shopHost === '' || strcasecmp($requestHost, $shopHost) !== 0) {
+            return '';
+        }
+        if (!Tools::usingSecureMode()) {
+            return '';
+        }
+        if (preg_match('#^https://#i', $index)) {
+            return $index;
+        }
+        if (isset($index[0]) && $index[0] === '/') {
+            return 'https://' . $shopHost . $index;
+        }
+        $script = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
+        $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
+        if ($dir === '' || $dir === '.') {
+            $dir = '';
+        }
+
+        return 'https://' . $shopHost . $dir . '/' . ltrim($index, '/');
     }
 
     /**

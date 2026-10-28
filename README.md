@@ -60,15 +60,18 @@ Keep these credentials handy for the next step.
 
 You can install the module using PrestaShop's built-in module manager. The installation process typically takes 2-5 minutes.
 
+The install file is `kiyoh-<version>.zip`. It is built by GitHub Actions (the `kiyoh-module` artifact on each run, and the file attached to a GitHub Release). It is not stored in the git repository.
+
 **Installation steps:**
-1. Log into your PrestaShop admin panel
-2. Go to **Modules > Module Manager**
-3. Click **Upload a module** at the top of the page
-4. Click **select file** and choose the `kiyoh.zip` file
-5. Click **Upload this module**
-6. Once uploaded, find "Kiyoh Reviews" in the module list
-7. Click **Install**
-8. Verify installation success (module will show in the installed modules list)
+1. Download `kiyoh-<version>.zip` from the GitHub Release, or from the Actions artifact on the pull request
+2. Log into your PrestaShop admin panel
+3. Go to **Modules > Module Manager**
+4. Click **Upload a module** at the top of the page
+5. Click **select file** and choose that zip
+6. Click **Upload this module**
+7. Once uploaded, find "Kiyoh Reviews" in the module list
+8. Click **Install**
+9. Verify installation success (module will show in the installed modules list)
 
 **Alternative method (for technical users):**
 - Upload the module files to `/modules/kiyoh/` directory via FTP
@@ -76,7 +79,25 @@ You can install the module using PrestaShop's built-in module manager. The insta
 
 Once installed, you can configure the module by clicking **Configure** next to the module name.
 
-### Step 3: Configure the Module
+Developers can build the same zip locally:
+
+```
+bash scripts/build-release.sh
+```
+
+That writes `dist/kiyoh-<version>.zip`.
+
+### Step 3: Connect, or enter API credentials
+
+**Connect with Kiyoh / Klantenvertellen** is on the configuration page, above the manual fields. Save the platform first. Kiyoh.com opens `https://connect.kiyoh.com`. Klantenvertellen.nl opens `https://connect.klantenvertellen.nl`. The button opens a popup. Sign in, complete 2FA if the account has it, and pick a location. The module then stores that location's ID and invite API key.
+
+The shop must be HTTPS, with friendly URLs on. The return address is `https://{shop-host}/module/kiyoh/oauth`. In a multistore, select one shop before connecting. Each shop registers its own return address.
+
+No shared HMAC key or client secret is required, and none is included in the module. Connect returns a shop credential once. The module stores it encrypted and uses it for later sign-in, refresh, and revoke. Disconnect revokes the session and keeps that credential, so connecting again on the same return address does not need a new secret.
+
+**Manual fallback:** Location ID and API key stay on the form. Existing installs keep working without Connect. Saving a different Location ID or API key by hand clears the linked flag and leaves the Connect session in place until you click **Disconnect**. Disconnect revokes the Connect session. When the saved credentials came from Connect, Disconnect also clears the Location ID and API key.
+
+### Step 4: Configure the rest of the module
 
 1. Log into your PrestaShop admin panel
 2. Go to **Modules > Module Manager**
@@ -245,7 +266,7 @@ Enable PrestaShop debug mode to see detailed information about module operations
 
 ## About This Module
 
-**Version**: 1.2.0  
+**Version**: 1.4.0  
 **Compatibility**: PrestaShop 1.7.0.0–9.2.0  
 **PHP**: 8.2 or higher  
 **Developer**: Kiyoh  
@@ -260,6 +281,53 @@ For technical support:
 3. Contact your review platform support team
 4. Consult module documentation
 
+## Kiyoh Mobile health
+
+The module reports shop health to Kiyoh Mobile so the plugins page can show whether this store is connected. A report never blocks checkout, order updates, or product saves. Requests time out quickly, and a `429` response is honored instead of retried in the same request.
+
+### Where reports are sent
+
+In **General Settings**, **Kiyoh Mobile URL(s)** is a comma-separated list of Kiyoh Mobile base URLs. The default is `https://kiyoh-mobile.com`. The module posts to `{url}/api/integrations/health` for each URL.
+
+To show the shop on Kiyoh Mobile staging as well, set the field to:
+
+```
+https://kiyoh-mobile.com,https://kiyohmobileui-staging.up.railway.app
+```
+
+Each request sends:
+
+- `X-Publication-Api-Token`: the API key already saved on this module
+- `X-Location-Id`: the Location ID already saved on this module
+- `platform`: `prestashop`
+- `shopId`: the shop domain (the virtual shop path is included for multistore shops that share a domain)
+- `pluginVersion`: the module version
+- `connection`, `invites`, and `productSync`
+
+`productSync` can include up to 500 product codes from products that synced successfully. Codes are not stored in the health record; Kiyoh Mobile marks them as imported for Smart Widgets.
+
+### When a report is sent
+
+- Saving the module configuration. Changing the Location ID or API key also checks the review-platform connection before the report is sent. Other setting changes send the report without that extra check.
+- Testing the API connection
+- A review invitation is sent or fails
+- A product sync finishes (including bulk sync)
+- Once a day from the health cron URL, or from the PrestaShop cronjobs module
+
+The daily run sends again only when the payload changed, or when the last accepted report for that URL is at least 24 hours old. Kiyoh Mobile treats a shop as stale when it has not heard from the plugin for more than 48 hours.
+
+### Daily cron
+
+Open the module configuration page and copy **Daily health cron**. The link looks like:
+
+```
+https://your-shop.example/module/kiyoh/cron?token=YOUR_TOKEN
+```
+
+Call that URL once a day. The token is created for this shop and is required. A wrong token gets `403` and does not report anything.
+
+In a multistore, one call reports every active shop, using that shop's own domain and saved credentials.
+
 ## Advanced Configuration
 
 ### Multisite Support
@@ -270,9 +338,47 @@ The module is compatible with PrestaShop multi-store installations. Configure ea
 
 The module works with multilingual plugins and will attempt to detect customer language for invitations.
 
+## Permissions
+
+- **Configure the module.** The employee must be logged into the back office. Connect and Disconnect also check the `AdminModules` token.
+- **HTTPS to Kiyoh-Connect.** `connect.kiyoh.com` (Kiyoh, tenant 98) and `connect.klantenvertellen.nl` (Klantenvertellen, tenant 99). Scope `integration:connect` only, so the module can read one location's invite key.
+- **HTTPS to the review platform and to each Kiyoh Mobile URL** the merchant saved. Health reports use the stored API key and Location ID.
+- **Public return address** `https://{shop-host}/module/kiyoh/oauth`. Connect redirects the browser here. The request is accepted only when `state` matches the sign-in that an employee started for this shop.
+- **Daily health URL** `/module/kiyoh/cron`. It requires the module cron token. A wrong token gets `403`.
+- Friendly URLs must be enabled, or the return address will not reach the module.
+
+## Data stored
+
+Kept until you uninstall the module:
+
+- Location ID, API key, platform, invitation and product-sync settings, and the Kiyoh Mobile URL list
+- Product sync rows (`ps_kiyoh_product_sync`) and invitation rows (`ps_kiyoh_invitations`)
+- Health report state and the cron token
+- After Connect: shop origin, return address, issuer, location name, tenant id, an encrypted refresh token, an encrypted per-shop credential, and a module-generated encryption key. The PKCE verifier is kept only until the popup returns (at most 15 minutes), and it is encrypted.
+- No shared HMAC key and no shared client secret are stored. The shop secret is the credential Connect returns once.
+
+There is no export button. The Location ID is visible on the configuration page. Uninstall is how a shop erases this module's data. Orders, customers, and catalog rows are not part of that data.
+
+## Uninstall
+
+Uninstall drops `ps_kiyoh_product_sync` and `ps_kiyoh_invitations`, deletes every configuration key listed above (including the shop credential), and asks Kiyoh-Connect to revoke the refresh token (`POST /revoke`) and the shop registration (`POST /shops/revoke`) using the stored shop credential. If that credential is missing, the remote calls are skipped. Local data is removed either way. PrestaShop orders and customers stay.
+
+## Developers
+
+```
+php tests/KiyohMobileHealthTest.php
+php tests/KiyohConnectTest.php
+python3 scripts/preflight.py .
+bash scripts/build-release.sh
+```
+
+The PHP tests do not need a PrestaShop installation. `PLUGIN_SPEC.md` is the contract. `CHANGELOG.md` lists what each version changed.
+
 ## Security
 
-- API keys are stored securely in PrestaShop options
-- All user inputs are sanitized and validated
-- AJAX requests include nonce verification
-- User capability checks prevent unauthorized access
+- Connect and Disconnect require a logged-in employee and the back-office token
+- The OAuth `state` is compared with `hash_equals` and can be used once
+- The refresh token and the per-shop credential are encrypted with AES-256-GCM. The encryption key is generated on the shop and stored in the shop database
+- The module does not contain a shared HMAC key or client secret, and the configuration page does not ask for one. See `PLUGIN_SPEC.md`
+- Review API and Connect calls verify TLS. Connect hosts are limited to the two issuers
+- Configuration output is escaped. Health and Connect failures are not written into the order flow
