@@ -287,13 +287,7 @@ The module reports shop health to Kiyoh Mobile so the plugins page can show whet
 
 ### Where reports are sent
 
-In **General Settings**, **Kiyoh Mobile URL(s)** is a comma-separated list of Kiyoh Mobile base URLs. The default is `https://kiyoh-mobile.com`. The module posts to `{url}/api/integrations/health` for each URL.
-
-To show the shop on Kiyoh Mobile staging as well, set the field to:
-
-```
-https://kiyoh-mobile.com,https://kiyohmobileui-staging.up.railway.app
-```
+The module posts to `https://kiyoh-mobile.com/api/integrations/health` by default. Merchants do not choose the target URL in the back office.
 
 Each request sends:
 
@@ -342,7 +336,7 @@ The module works with multilingual plugins and will attempt to detect customer l
 
 - **Configure the module.** The employee must be logged into the back office. Connect and Disconnect also check the `AdminModules` token.
 - **HTTPS to Kiyoh-Connect.** `connect.kiyoh.com` (Kiyoh, tenant 98) and `connect.klantenvertellen.nl` (Klantenvertellen, tenant 99). Scope `integration:connect` only, so the module can read one location's invite key.
-- **HTTPS to the review platform and to each Kiyoh Mobile URL** the merchant saved. Health reports use the stored API key and Location ID.
+- **HTTPS to the review platform and to Kiyoh Mobile** (`https://kiyoh-mobile.com` by default). Health reports use the stored API key and Location ID.
 - **Public return address** `https://{shop-host}/module/kiyoh/oauth`. Connect redirects the browser here. The request is accepted only when `state` matches the sign-in that an employee started for this shop.
 - **Daily health URL** `/module/kiyoh/cron`. It requires the module cron token. A wrong token gets `403`.
 - Friendly URLs must be enabled, or the return address will not reach the module.
@@ -351,7 +345,7 @@ The module works with multilingual plugins and will attempt to detect customer l
 
 Kept until you uninstall the module:
 
-- Location ID, API key, platform, invitation and product-sync settings, and the Kiyoh Mobile URL list
+- Location ID, API key, platform, invitation and product-sync settings, and optional hidden `KIYOH_MOBILE_URLS` when set outside the UI
 - Product sync rows (`ps_kiyoh_product_sync`) and invitation rows (`ps_kiyoh_invitations`)
 - Health report state and the cron token
 - After Connect: shop origin, return address, issuer, location name, tenant id, an encrypted refresh token, an encrypted per-shop credential, and a module-generated encryption key. The PKCE verifier is kept only until the popup returns (at most 15 minutes), and it is encrypted.
@@ -373,6 +367,20 @@ bash scripts/build-release.sh
 ```
 
 The PHP tests do not need a PrestaShop installation. `PLUGIN_SPEC.md` is the contract. `CHANGELOG.md` lists what each version changed.
+
+### Kiyoh Mobile URL override (testers only)
+
+Health reports go to `https://kiyoh-mobile.com` unless you set a hidden override. Do not expose these to merchants.
+
+1. **PHP constant** (for example in `config/defines.inc.php` before the module loads):
+
+   ```php
+   define('KIYOH_MOBILE_BASE_URLS', 'https://kiyoh-mobile.com,https://kiyohmobileui-staging.up.railway.app');
+   ```
+
+2. **Configuration key** `KIYOH_MOBILE_URLS` — comma-separated base URLs, set via code or the PrestaShop CLI. Saving the module configuration page does not change this key.
+
+Upgrading from 1.4.1 removes the staging host from a previously saved `KIYOH_MOBILE_URLS` value when it contained `kiyohmobileui-staging.up.railway.app`.
 
 ## Security
 

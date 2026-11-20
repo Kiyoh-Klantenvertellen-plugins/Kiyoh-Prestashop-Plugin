@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.3 — 2026-11-20
+
+### Changed
+- **Kiyoh Mobile health** no longer shows **Kiyoh Mobile URL(s)** on the merchant configuration page. Health reports always go to `https://kiyoh-mobile.com` unless a hidden override is set (see README Developers). On upgrade from 1.4.1, a saved value that included the staging host `kiyohmobileui-staging.up.railway.app` is cleaned to production URLs only (KP-173).
+- Module version is 1.4.3.
+
+### Note
+- GitHub pre-release tag `v1.4.2` (commit `c25800e`) is a separate Connect configure-route token fix and is not this release.
+
 ## 1.4.1 — 2026-10-28
 
 ### Fixed
