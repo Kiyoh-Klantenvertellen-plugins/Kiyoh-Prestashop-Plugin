@@ -13,7 +13,7 @@ if (!defined('_PS_VERSION_')) {
  * @param Kiyoh $module
  * @return bool
  */
-function upgrade_module_1_4_2($module)
+function upgrade_module_1_4_3($module)
 {
     return $module->upgradeRemoveStagingMobileUrls();
 }

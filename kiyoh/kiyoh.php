@@ -30,7 +30,7 @@ class Kiyoh extends Module
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.4.2';
+        $this->version = '1.4.3';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array(
@@ -121,7 +121,7 @@ class Kiyoh extends Module
     }
 
     /**
-     * Remove tester staging hosts from saved KIYOH_MOBILE_URLS values (upgrade 1.4.2).
+     * Remove tester staging hosts from saved KIYOH_MOBILE_URLS values (upgrade 1.4.3).
      *
      * @return bool
      */
