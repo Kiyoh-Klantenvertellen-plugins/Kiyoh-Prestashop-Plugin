@@ -77,7 +77,7 @@ The install file is `kiyoh-<version>.zip`. It is built by GitHub Actions (the `k
 - Upload the module files to `/modules/kiyoh/` directory via FTP
 - Go to **Modules > Module Manager** and click **Install** next to "Kiyoh Reviews"
 
-Once installed, you can configure the module by clicking **Configure** next to the module name.
+Once installed, you can configure the module by clicking **Configure** next to the module name. That page is rendered by PrestaShop `HelperForm` in `kiyoh.php` (`displayForm()`), including all three **Invitation Type** choices (shop, product, and both).
 
 Developers can build the same zip locally:
 

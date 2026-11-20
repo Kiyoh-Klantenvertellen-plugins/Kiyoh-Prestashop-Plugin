@@ -3,6 +3,7 @@
 ## 1.4.1 — 2026-10-28
 
 ### Fixed
+- **Invitation Type — Shop Reviews Only** is available on the live module configure page (`getContent()` → `displayForm()` / PrestaShop `HelperForm`). The unused Smarty template `views/templates/admin/configure.tpl` only listed “Shop + Product” and “Product” and was never rendered; it has been removed so it cannot drift from the working UI again (KP-171).
 - **Connect with Kiyoh / Klantenvertellen** no longer opens the module configuration page with "The admin token is missing or expired." The button posts back to the configure URL that is already open, including both the legacy `token` and the Symfony `_token`, and the popup is sent to `https://connect.kiyoh.com/authorize` (or `https://connect.klantenvertellen.nl/authorize` for Klantenvertellen). PrestaShop 9's `Tools::getAdminTokenLite()` returns the Symfony CSRF token, not the legacy AdminModules hash, and the previous form dropped `_token` from that URL.
 - The configure URL keeps HTTPS when a tunnel sends `X-Forwarded-Proto: https,http`, and it uses the first host in `X-Forwarded-Host` instead of the whole comma-separated list.
 
