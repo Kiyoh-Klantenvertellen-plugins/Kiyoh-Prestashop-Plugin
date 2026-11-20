@@ -277,9 +277,8 @@ class KiyohMobileHealthReporter
             return $result;
         }
 
-        $parsed = KiyohMobileHealth::parseBaseUrls(
-            self::configString(self::URLS_KEY, $idShopGroup, $idShop),
-            KiyohMobileHealth::DEFAULT_URLS
+        $parsed = KiyohMobileHealth::resolveBaseUrls(
+            self::configString(self::URLS_KEY, $idShopGroup, $idShop)
         );
         if ($parsed['invalid'] !== []) {
             self::log('ignoring invalid Kiyoh Mobile URLs', 2);

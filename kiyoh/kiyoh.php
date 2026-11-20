@@ -30,7 +30,7 @@ class Kiyoh extends Module
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.4.1';
+        $this->version = '1.4.2';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array(
@@ -118,6 +118,51 @@ class Kiyoh extends Module
             $this->uninstallDb() &&
             $this->uninstallConfiguration() &&
             $this->uninstallAdminTab();
+    }
+
+    /**
+     * Remove tester staging hosts from saved KIYOH_MOBILE_URLS values (upgrade 1.4.2).
+     *
+     * @return bool
+     */
+    public function upgradeRemoveStagingMobileUrls()
+    {
+        require_once dirname(__FILE__) . '/classes/KiyohMobileHealth.php';
+
+        $updated = true;
+        if (class_exists('Shop')) {
+            $shopIds = Shop::getCompleteListOfShopsID();
+            if (is_array($shopIds)) {
+                foreach ($shopIds as $shopId) {
+                    $shopId = (int) $shopId;
+                    if ($shopId <= 0) {
+                        continue;
+                    }
+                    $shop = new Shop($shopId);
+                    if (!Validate::isLoadedObject($shop)) {
+                        continue;
+                    }
+                    $raw = Configuration::get('KIYOH_MOBILE_URLS', null, (int) $shop->id_shop_group, $shopId);
+                    $cleaned = KiyohMobileHealth::sanitizeSavedMobileUrls(is_string($raw) ? $raw : null);
+                    if ($cleaned === null) {
+                        continue;
+                    }
+                    if (!Configuration::updateValue('KIYOH_MOBILE_URLS', $cleaned, false, (int) $shop->id_shop_group, $shopId)) {
+                        $updated = false;
+                    }
+                }
+            }
+        }
+
+        $globalRaw = Configuration::getGlobalValue('KIYOH_MOBILE_URLS');
+        $globalCleaned = KiyohMobileHealth::sanitizeSavedMobileUrls(is_string($globalRaw) ? $globalRaw : null);
+        if ($globalCleaned !== null) {
+            if (!Configuration::updateGlobalValue('KIYOH_MOBILE_URLS', $globalCleaned)) {
+                $updated = false;
+            }
+        }
+
+        return $updated;
     }
 
     /**
@@ -215,7 +260,6 @@ class Kiyoh extends Module
             'KIYOH_PLATFORM' => 'kiyoh',
             'KIYOH_LOCATION_ID' => '',
             'KIYOH_API_KEY' => '',
-            'KIYOH_MOBILE_URLS' => 'https://kiyoh-mobile.com',
             'KIYOH_AUTO_SYNC' => true,
             'KIYOH_EXCLUDED_TYPES' => '',
             'KIYOH_EXCLUDED_CODES' => '',
@@ -522,16 +566,6 @@ class Kiyoh extends Module
             $errors[] = $this->l('Max products must be between 1 and 10');
         }
 
-        require_once dirname(__FILE__) . '/classes/KiyohMobileHealth.php';
-        $mobileUrlsRaw = Tools::getValue('KIYOH_MOBILE_URLS');
-        if (!is_string($mobileUrlsRaw)) {
-            $mobileUrlsRaw = '';
-        }
-        $parsedMobileUrls = KiyohMobileHealth::parseBaseUrls($mobileUrlsRaw, KiyohMobileHealth::DEFAULT_URLS);
-        if (trim($mobileUrlsRaw) !== '' && $parsedMobileUrls['invalid'] !== []) {
-            $errors[] = $this->l('Kiyoh Mobile URL(s) must be a comma-separated list of http(s) base URLs.');
-        }
-
         if (!empty($errors)) {
             return $this->displayError(implode('<br>', $errors));
         }
@@ -549,7 +583,6 @@ class Kiyoh extends Module
         Configuration::updateValue('KIYOH_PLATFORM', strval(Tools::getValue('KIYOH_PLATFORM')));
         Configuration::updateValue('KIYOH_LOCATION_ID', $kiyoh_location_id);
         Configuration::updateValue('KIYOH_API_KEY', $kiyoh_api_key);
-        Configuration::updateValue('KIYOH_MOBILE_URLS', implode(',', $parsedMobileUrls['urls']));
         Configuration::updateValue('KIYOH_AUTO_SYNC', (int)Tools::getValue('KIYOH_AUTO_SYNC'));
         Configuration::updateValue('KIYOH_EXCLUDED_TYPES', is_array($excludedTypes) ? implode(',', $excludedTypes) : '');
         Configuration::updateValue('KIYOH_EXCLUDED_CODES', strval(Tools::getValue('KIYOH_EXCLUDED_CODES')));
@@ -754,13 +787,6 @@ class Kiyoh extends Module
                     'size' => 50,
                     'required' => true,
                     'desc' => $this->l('Filled in from Connect (invite API key), or type an API key yourself. This is the fallback for existing installs.'),
-                ),
-                array(
-                    'type' => 'text',
-                    'label' => $this->l('Kiyoh Mobile URL(s)'),
-                    'name' => 'KIYOH_MOBILE_URLS',
-                    'size' => 80,
-                    'desc' => $this->l('Comma-separated Kiyoh Mobile base URLs. Health is posted to each one. Default: https://kiyoh-mobile.com. Add https://kiyohmobileui-staging.up.railway.app to report to staging as well.'),
                 ),
                 array(
                     'type' => 'html',
@@ -983,11 +1009,6 @@ class Kiyoh extends Module
         $helper->fields_value['KIYOH_PLATFORM'] = Configuration::get('KIYOH_PLATFORM');
         $helper->fields_value['KIYOH_LOCATION_ID'] = Configuration::get('KIYOH_LOCATION_ID');
         $helper->fields_value['KIYOH_API_KEY'] = Configuration::get('KIYOH_API_KEY');
-        $mobileUrls = Configuration::get('KIYOH_MOBILE_URLS');
-        if (!is_string($mobileUrls) || trim($mobileUrls) === '') {
-            $mobileUrls = 'https://kiyoh-mobile.com';
-        }
-        $helper->fields_value['KIYOH_MOBILE_URLS'] = $mobileUrls;
         $helper->fields_value['KIYOH_CRON_URL'] = '';
         $helper->fields_value['KIYOH_AUTO_SYNC'] = Configuration::get('KIYOH_AUTO_SYNC');
         $helper->fields_value['KIYOH_EXCLUDED_TYPES[]'] = !empty($excludedTypes) ? explode(',', $excludedTypes) : array();

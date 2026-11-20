@@ -1,7 +1,7 @@
 # PLUGIN_SPEC — Kiyoh Reviews for PrestaShop
 
 **Shape:** A (PrestaShop module) + B (Kiyoh review API and Kiyoh-Connect)
-**Owner:** Kiyoh plugins   **Version:** 1.4.1
+**Owner:** Kiyoh plugins   **Version:** 1.4.2
 
 ## Host
 - Platform: PrestaShop 1.7.0.0 through 9.2.0
@@ -18,7 +18,7 @@
   - Issuer `https://connect.kiyoh.com` tenant 98
   - Issuer `https://connect.klantenvertellen.nl` tenant 99
   - Client `kiyoh-prestashop`, scope `integration:connect`, PKCE S256 + `state`
-- Kiyoh Mobile health: `POST {url}/api/integrations/health`, default `https://kiyoh-mobile.com`
+- Kiyoh Mobile health: `POST {url}/api/integrations/health`, default `https://kiyoh-mobile.com`. Merchants do not configure base URLs. Testers may override via the `KIYOH_MOBILE_BASE_URLS` PHP constant or the `KIYOH_MOBILE_URLS` configuration key (code or CLI only).
 - Auth: Connect authorization code. `POST /token` is `application/x-www-form-urlencoded` with `grant_type=authorization_code`, `client_id`, the per-shop credential, `code`, `code_verifier`, and the exact `redirect_uri`. Refresh uses `grant_type=refresh_token` and the same shop credential. There is no shared client secret. Credentials are `GET /integration/credentials` with `Authorization: Bearer`.
 - Shop registration: `POST {issuer}/shops/register` JSON with `client_id`, `shop_url`, and `redirect_uri`. No HMAC. The response returns a per-shop credential once. The module stores it encrypted and sends it on `/token`, refresh, `POST /revoke`, and `POST /shops/revoke`. A later register for the same return address may omit the secret; the module keeps the stored one. If the return address changed and no new secret is returned, configuration shows `shop_credential_missing`.
 - Wire names are provisional and live only in `KiyohConnect::FIELDS` (`shopId` → `shop_id`, `shopSecret` → `shop_secret`, plus the grant, code, verifier, refresh, and token fields). Change that map when Connect PR #1 reports the final names. Call sites use logical names.
@@ -36,7 +36,7 @@
 
 ## Permissions requested (and why)
 - Back-office employee who can configure modules, plus the admin CSRF token on Connect and Disconnect (`token` on PrestaShop 1.7/8, `_token` on the Symfony configure page in 8/9). Stops another site from starting a sign-in or disconnecting the shop.
-- Outbound HTTPS to the two Connect issuers, the review API, and the configured Kiyoh Mobile URLs.
+- Outbound HTTPS to the two Connect issuers, the review API, and Kiyoh Mobile (`https://kiyoh-mobile.com`, or tester overrides).
 - Scope `integration:connect` only. It is what Connect exchanges for one location's invite key.
 - Front route `/module/kiyoh/oauth` is public so Connect can redirect the browser back. It accepts only a `state` that an authenticated employee stored for this shop.
 - Front route `/module/kiyoh/cron` requires the module cron token.

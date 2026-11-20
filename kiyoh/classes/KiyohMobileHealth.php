@@ -24,8 +24,12 @@ class KiyohMobileHealth
 
     public const HEALTH_PATH = '/api/integrations/health';
 
-    /** Default for the "Kiyoh Mobile URL(s)" setting. */
     public const DEFAULT_URLS = 'https://kiyoh-mobile.com';
+
+    /**
+     * Staging host merchants must not configure. Removed from saved values on upgrade.
+     */
+    public const STAGING_MOBILE_HOST = 'kiyohmobileui-staging.up.railway.app';
 
     public const MAX_PRODUCT_CODES = 500;
 
@@ -53,6 +57,84 @@ class KiyohMobileHealth
      * @param string $defaultRaw
      * @return array{urls: string[], invalid: string[]}
      */
+    /**
+     * Resolve health-report base URLs for a shop.
+     *
+     * Priority: the optional $overrideRaw argument (tests), then the
+     * KIYOH_MOBILE_BASE_URLS PHP constant, then the KIYOH_MOBILE_URLS
+     * configuration value (set via code or CLI, not the merchant UI).
+     * An empty configuration uses production only.
+     *
+     * @param string|null $configurationRaw Value from Configuration::get('KIYOH_MOBILE_URLS')
+     * @param string|null $overrideRaw Tester override for unit tests only
+     * @return array{urls: string[], invalid: string[]}
+     */
+    public static function resolveBaseUrls(?string $configurationRaw, ?string $overrideRaw = null): array
+    {
+        $source = null;
+        if ($overrideRaw !== null && trim($overrideRaw) !== '') {
+            $source = $overrideRaw;
+        } elseif (defined('KIYOH_MOBILE_BASE_URLS')) {
+            $constant = constant('KIYOH_MOBILE_BASE_URLS');
+            if (is_string($constant) && trim($constant) !== '') {
+                $source = $constant;
+            }
+        }
+        if ($source === null) {
+            $source = is_string($configurationRaw) ? trim($configurationRaw) : '';
+        }
+
+        return self::parseBaseUrls($source === '' ? null : $source);
+    }
+
+    /**
+     * @param string|null $raw
+     */
+    public static function containsStagingMobileUrl(?string $raw): bool
+    {
+        if (!is_string($raw) || trim($raw) === '') {
+            return false;
+        }
+
+        return stripos($raw, self::STAGING_MOBILE_HOST) !== false;
+    }
+
+    /**
+     * Drop staging hosts from a saved comma-separated list. Returns production default when empty.
+     *
+     * @param string|null $raw
+     */
+    public static function removeStagingMobileUrl(?string $raw): string
+    {
+        $parsed = self::parseBaseUrls($raw, '');
+        $kept = [];
+        foreach ($parsed['urls'] as $url) {
+            $host = parse_url($url, PHP_URL_HOST);
+            if (is_string($host) && strcasecmp($host, self::STAGING_MOBILE_HOST) === 0) {
+                continue;
+            }
+            $kept[] = $url;
+        }
+        if ($kept === []) {
+            return self::DEFAULT_URLS;
+        }
+
+        return implode(',', $kept);
+    }
+
+    /**
+     * @param string|null $raw
+     * @return string|null Cleaned value when staging was present, otherwise null
+     */
+    public static function sanitizeSavedMobileUrls(?string $raw): ?string
+    {
+        if (!self::containsStagingMobileUrl($raw)) {
+            return null;
+        }
+
+        return self::removeStagingMobileUrl($raw);
+    }
+
     public static function parseBaseUrls(?string $raw, string $defaultRaw = self::DEFAULT_URLS): array
     {
         $source = is_string($raw) ? trim($raw) : '';

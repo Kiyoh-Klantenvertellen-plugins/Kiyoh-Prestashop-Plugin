@@ -43,6 +43,35 @@ function same($expected, $actual, $message)
 
 $default = KiyohMobileHealth::parseBaseUrls(null);
 same(['https://kiyoh-mobile.com'], $default['urls'], 'empty setting uses the production default');
+
+$resolved = KiyohMobileHealth::resolveBaseUrls(null);
+same(['https://kiyoh-mobile.com'], $resolved['urls'], 'resolve with no configuration uses production');
+same(['https://kiyoh-mobile.com'], KiyohMobileHealth::resolveBaseUrls('')['urls'], 'resolve with blank configuration uses production');
+$stagingList = 'https://kiyoh-mobile.com,https://kiyohmobileui-staging.up.railway.app';
+same(
+    ['https://kiyoh-mobile.com', 'https://kiyohmobileui-staging.up.railway.app'],
+    KiyohMobileHealth::resolveBaseUrls(null, $stagingList)['urls'],
+    'resolve accepts a tester override argument'
+);
+
+check(KiyohMobileHealth::containsStagingMobileUrl($stagingList), 'staging host is detected in saved urls');
+check(!KiyohMobileHealth::containsStagingMobileUrl('https://kiyoh-mobile.com'), 'production-only url is not staging');
+same(
+    'https://kiyoh-mobile.com',
+    KiyohMobileHealth::removeStagingMobileUrl($stagingList),
+    'staging host is stripped from a mixed list'
+);
+same(
+    'https://kiyoh-mobile.com',
+    KiyohMobileHealth::removeStagingMobileUrl('https://kiyohmobileui-staging.up.railway.app'),
+    'staging-only saved value becomes production default'
+);
+check(KiyohMobileHealth::sanitizeSavedMobileUrls('https://kiyoh-mobile.com') === null, 'production-only value needs no sanitization');
+same(
+    'https://kiyoh-mobile.com',
+    KiyohMobileHealth::sanitizeSavedMobileUrls($stagingList),
+    'sanitize returns cleaned value when staging was present'
+);
 same([], $default['invalid'], 'default has no invalid urls');
 same(
     ['https://kiyoh-mobile.com'],
