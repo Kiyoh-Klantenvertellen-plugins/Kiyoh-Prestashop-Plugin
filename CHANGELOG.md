@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.2 — 2026-10-28
+
+### Fixed
+- **Connect with Kiyoh / Klantenvertellen** posts back to the configure URL that is already open (including when the route is in `PATH_INFO` behind a proxy) and accepts the token that URL was checked with. PrestaShop 9's Modules > Configure route checks the user CSRF `_token`, not `md5` of the `AdminModules` tab. On 8.2 and 9 that tab is `AdminModulesSf`. `Tools::getAdminTokenLite('AdminModules')` throws when the legacy employee is missing, so 1.4.1 never compared the token PrestaShop had already accepted.
+
+### Changed
+- Module version is 1.4.2.
+
 ## 1.4.1 — 2026-10-28
 
 ### Fixed

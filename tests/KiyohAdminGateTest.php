@@ -174,6 +174,70 @@ same($symfony, $legacyQuery['_token'] ?? '', 'the Symfony token is added for Pre
 
 same('', KiyohAdminGate::withAdminTokens("https://shop.example/admin\n", $legacy, $symfony), 'a URL with a newline is rejected');
 
+// PrestaShop 9 Modules > Configure. The route checks the user CSRF token.
+// Tools::getAdminTokenLite('AdminModules') is not that value when the legacy
+// employee is missing, and the installed tab class is AdminModulesSf.
+$cookieKey = 'cookie-key';
+$employeeId = 7;
+$csrf = 'g5AZ8GEscofUtruxoKBeTyQPlmgQiZvsH8d14Zc5YyM';
+$adminModules = md5($cookieKey . 'AdminModules' . '0' . $employeeId);
+$adminModulesSf = md5($cookieKey . 'AdminModulesSf' . '15' . $employeeId);
+$employeeOnly = KiyohAdminGate::employeeToken($employeeId, $cookieKey);
+check($csrf !== $adminModules, 'user CSRF token is not the AdminModules hash');
+check($adminModules !== $adminModulesSf, 'AdminModulesSf hash differs when that tab exists');
+check($employeeOnly !== $adminModules, 'PS 8 listener token is not the AdminModules tab token');
+same($employeeOnly, md5($cookieKey . $employeeId), 'employee token is md5(cookie key + employee id)');
+
+$symfonyPage = '/admin123/index.php/improve/modules/manage/action/configure/kiyoh?_token=' . $csrf;
+same(
+    $symfonyPage,
+    KiyohAdminGate::configureRequestUri($symfonyPage, '/admin123/index.php', '', '', 'kiyoh'),
+    'Connect posts to the open Symfony configure URL'
+);
+$fields = KiyohAdminGate::formTokens($csrf, $adminModules, $csrf);
+same($adminModules, $fields['token'], 'legacy hash is sent as token');
+same($csrf, $fields['symfonyToken'], 'user CSRF token is sent as _token');
+check($fields['symfonyToken'] !== $adminModules, 'legacy hash is not copied into _token');
+$onlyCsrf = KiyohAdminGate::formTokens($csrf, '', '');
+same($csrf, $onlyCsrf['token'], 'when the legacy hash cannot be built the page _token is sent');
+same($csrf, $onlyCsrf['symfonyToken'], 'the page _token is also sent as _token');
+$provided = KiyohAdminGate::providedTokens(
+    ['_token' => $csrf],
+    ['token' => $onlyCsrf['token'], '_token' => $onlyCsrf['symfonyToken'], 'kiyoh_connect_start' => '1']
+);
+check(!KiyohAdminGate::accepts($provided, [$adminModules]), 'AdminModules hash does not match the configure _token');
+check(KiyohAdminGate::accepts($provided, [$csrf, $adminModulesSf, $employeeOnly]), 'the configure URL _token authorizes Connect');
+
+$joined = KiyohAdminGate::configureRequestUri(
+    '/admin123/index.php',
+    '/admin123/index.php',
+    '/improve/modules/manage/action/configure/kiyoh',
+    '_token=' . $csrf,
+    'kiyoh'
+);
+same(
+    '/admin123/index.php/improve/modules/manage/action/configure/kiyoh?_token=' . $csrf,
+    $joined,
+    'a rewrite that leaves the route in PATH_INFO still posts to that route'
+);
+
+$ps8 = KiyohAdminGate::legacyToken('AdminModules', 42, $employeeId, $cookieKey);
+$ps8Provided = KiyohAdminGate::providedTokens(
+    ['controller' => 'AdminModules', 'configure' => 'kiyoh', 'token' => $ps8],
+    ['kiyoh_connect_start' => '1']
+);
+check(KiyohAdminGate::accepts($ps8Provided, [$ps8, $employeeOnly]), 'PS 8 AdminModules token is accepted');
+check(
+    KiyohAdminGate::accepts(
+        KiyohAdminGate::providedTokens(['token' => $employeeOnly, 'configure' => 'kiyoh'], ['kiyoh_connect_start' => '1']),
+        [$ps8, $employeeOnly]
+    ),
+    'PS 8 listener employee token is accepted'
+);
+$legacyFields = KiyohAdminGate::formTokens($ps8, $ps8, '');
+same('', $legacyFields['symfonyToken'], 'a legacy configure page does not send its hash as _token');
+same($ps8, $legacyFields['token'], 'a legacy configure page sends token');
+
 if ($failures > 0) {
     fwrite(STDERR, $failures . " failed, " . $assertions . " assertions\n");
     exit(1);
