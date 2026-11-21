@@ -1,5 +1,6 @@
 -- Kiyoh Module Database Installation
--- This file contains the SQL statements to create the necessary database tables
+-- This file contains the SQL statements to create the necessary database tables.
+-- Existing shops receive new invitation retry columns through upgradeModule() in kiyoh.php (no manual SQL).
 
 -- Product sync tracking table
 CREATE TABLE IF NOT EXISTS `PREFIX_kiyoh_product_sync` (
@@ -24,6 +25,9 @@ CREATE TABLE IF NOT EXISTS `PREFIX_kiyoh_invitations` (
     `sent_at` datetime DEFAULT NULL,
     `delay_days` int(11) DEFAULT 0,
     `status` varchar(20) DEFAULT 'pending',
+    `failure_class` varchar(20) DEFAULT NULL,
+    `retry_attempts` int(11) NOT NULL DEFAULT 0,
+    `next_retry_at` datetime DEFAULT NULL,
     `response_data` text,
     `date_add` datetime NOT NULL,
     PRIMARY KEY (`id_invitation`),

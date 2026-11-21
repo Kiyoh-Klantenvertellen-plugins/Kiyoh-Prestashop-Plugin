@@ -1,7 +1,7 @@
 # PLUGIN_SPEC — Kiyoh Reviews for PrestaShop
 
 **Shape:** A (PrestaShop module) + B (Kiyoh review API and Kiyoh-Connect)
-**Owner:** Kiyoh plugins   **Version:** 1.4.1
+**Owner:** Kiyoh plugins   **Version:** 1.4.4
 
 ## Host
 - Platform: PrestaShop 1.7.0.0 through 9.2.0
@@ -39,11 +39,11 @@
 - Outbound HTTPS to the two Connect issuers, the review API, and the configured Kiyoh Mobile URLs.
 - Scope `integration:connect` only. It is what Connect exchanges for one location's invite key.
 - Front route `/module/kiyoh/oauth` is public so Connect can redirect the browser back. It accepts only a `state` that an authenticated employee stored for this shop.
-- Front route `/module/kiyoh/cron` requires the module cron token.
+- Front route `/module/kiyoh/cron` requires the module cron token. It publishes health reports and retries temporary failed review invitations (max three attempts with backoff).
 - Friendly URLs must be enabled so the return address reaches the module.
 
 ## Data stored, retention, uninstall behaviour
-- `ps_kiyoh_product_sync` and `ps_kiyoh_invitations` (existing).
+- `ps_kiyoh_product_sync` and `ps_kiyoh_invitations` (including `failure_class`, `retry_attempts`, and `next_retry_at` on invitations from 1.4.4).
 - Configuration: module settings, including Location ID and API key (the same fields a merchant can type). Connect also stores the shop origin, return address, issuer, location name, tenant id, an encrypted refresh token, an encrypted shop credential (`shop_id` + `shop_secret`), a short-lived encrypted PKCE pending record, a one-shot result message, and a module-generated AES-256-GCM key.
 - There is no shared HMAC key and no shared client secret, in the zip or on the server.
 - Uninstall deletes those configuration keys and both tables, and best-effort calls `POST /revoke` and `POST /shops/revoke` with the stored shop credential. It does not delete orders, customers, or products. There is no separate export screen; Location ID is visible on the configuration page. Uninstall is the erase path.
