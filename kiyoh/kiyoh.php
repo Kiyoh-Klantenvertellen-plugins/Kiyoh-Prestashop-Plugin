@@ -30,7 +30,7 @@ class Kiyoh extends Module
     {
         $this->name = 'kiyoh';
         $this->tab = 'advertising_marketing';
-        $this->version = '1.4.1';
+        $this->version = '1.4.4';
         $this->author = 'Kiyoh';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array(
@@ -79,6 +79,99 @@ class Kiyoh extends Module
             $this->registerHook('actionCronJob') &&
             $this->installDb() &&
             $this->installConfiguration();
+    }
+
+    /**
+     * Upgrade module (PrestaShop Modules page → Upgrade).
+     */
+    public function upgradeModule($version)
+    {
+        return $this->upgradeInvitationRetryColumns();
+    }
+
+    /**
+     * Add invitation retry columns for existing shops (KP-138).
+     */
+    private function upgradeInvitationRetryColumns(): bool
+    {
+        $db = Db::getInstance();
+        $table = _DB_PREFIX_ . 'kiyoh_invitations';
+
+        $columns = [
+            'failure_class' => 'ALTER TABLE `' . $table . '` ADD COLUMN `failure_class` varchar(20) DEFAULT NULL AFTER `status`',
+            'retry_attempts' => 'ALTER TABLE `' . $table . '` ADD COLUMN `retry_attempts` int(11) NOT NULL DEFAULT 0 AFTER `failure_class`',
+            'next_retry_at' => 'ALTER TABLE `' . $table . '` ADD COLUMN `next_retry_at` datetime DEFAULT NULL AFTER `retry_attempts`',
+        ];
+
+        foreach ($columns as $name => $sql) {
+            if (!$this->tableColumnExists('kiyoh_invitations', $name)) {
+                if (!$db->execute($sql)) {
+                    return false;
+                }
+            }
+        }
+
+        return $this->backfillFailedInvitationRetries();
+    }
+
+    /**
+     * @return bool
+     */
+    private function tableColumnExists(string $table, string $column): bool
+    {
+        $sql = 'SHOW COLUMNS FROM `' . _DB_PREFIX_ . pSQL($table) . '` LIKE "' . pSQL($column) . '"';
+
+        return (bool) Db::getInstance()->executeS($sql);
+    }
+
+    /**
+     * Classify legacy failed rows so cron can pick up temporary errors safely.
+     */
+    private function backfillFailedInvitationRetries(): bool
+    {
+        $sql = 'SELECT `id_invitation`, `response_data` FROM `' . _DB_PREFIX_ . 'kiyoh_invitations`'
+            . ' WHERE `status` = "failed" AND (`failure_class` IS NULL OR `failure_class` = "")';
+
+        $rows = Db::getInstance()->executeS($sql);
+        if (!is_array($rows)) {
+            return true;
+        }
+
+        require_once dirname(__FILE__) . '/classes/KiyohInvitationSupport.php';
+
+        foreach ($rows as $row) {
+            $id = (int) ($row['id_invitation'] ?? 0);
+            if ($id <= 0) {
+                continue;
+            }
+            $error = '';
+            $httpStatus = null;
+            $decoded = json_decode((string) ($row['response_data'] ?? ''), true);
+            if (is_array($decoded)) {
+                $error = (string) ($decoded['error'] ?? '');
+                if (isset($decoded['http_status'])) {
+                    $httpStatus = (int) $decoded['http_status'];
+                }
+            }
+            $failureClass = KiyohInvitationSupport::classifyInviteFailure($error, $httpStatus);
+            $nextRetry = null;
+            if ($failureClass === 'temporary') {
+                $nextRetry = date('Y-m-d H:i:s', time() + KiyohInvitationSupport::retryBackoffSeconds(0));
+            }
+            Db::getInstance()->update(
+                'kiyoh_invitations',
+                [
+                    'failure_class' => pSQL($failureClass),
+                    'retry_attempts' => 0,
+                    'next_retry_at' => $nextRetry !== null ? pSQL($nextRetry) : null,
+                ],
+                'id_invitation = ' . $id,
+                0,
+                true
+            );
+        }
+
+        return true;
     }
 
     /**
@@ -150,6 +243,9 @@ class Kiyoh extends Module
             `sent_at` datetime DEFAULT NULL,
             `delay_days` int(11) DEFAULT 0,
             `status` varchar(20) DEFAULT \'pending\',
+            `failure_class` varchar(20) DEFAULT NULL,
+            `retry_attempts` int(11) NOT NULL DEFAULT 0,
+            `next_retry_at` datetime DEFAULT NULL,
             `response_data` text,
             `date_add` datetime NOT NULL,
             PRIMARY KEY (`id_invitation`),
@@ -375,14 +471,16 @@ class Kiyoh extends Module
      * Hook: Cron Job (PrestaShop cronjobs module).
      *
      * Republishes Kiyoh Mobile health when the payload changed or the last
-     * accepted report is older than 24 hours. Invite scheduling is unchanged.
+     * accepted report is older than 24 hours, and retries temporary failed invites.
      */
     public function hookActionCronJob($params)
     {
         try {
             require_once dirname(__FILE__) . '/classes/KiyohMobileHealthReporter.php';
+            require_once dirname(__FILE__) . '/classes/KiyohInvitationRetryRunner.php';
             KiyohMobileHealthReporter::ensureCronToken();
             KiyohMobileHealthReporter::publishDueReports();
+            KiyohInvitationRetryRunner::retryDueFailedInvitations();
         } catch (Throwable $e) {
             PrestaShopLogger::addLog(
                 'Kiyoh: health cron failed: ' . $e->getMessage(),
@@ -1018,7 +1116,7 @@ class Kiyoh extends Module
             $url = '';
         }
 
-        $intro = $this->l('Schedule this URL once a day, or enable the PrestaShop cronjobs module. The report is sent again when shop health changed, or when the last accepted report is older than 24 hours. A failed report never blocks checkout or order updates.');
+        $intro = $this->l('Schedule this URL once a day, or enable the PrestaShop cronjobs module. The report is sent again when shop health changed, or when the last accepted report is older than 24 hours. The same call also retries failed review invitations caused by temporary errors (for example HTTP 503), up to three times with backoff. A failed report or invite retry never blocks checkout or order updates.');
         if ($url === '') {
             return '<p>' . $intro . '</p>';
         }

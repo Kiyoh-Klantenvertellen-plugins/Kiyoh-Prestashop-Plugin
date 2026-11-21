@@ -1,6 +1,6 @@
 <?php
 /**
- * Daily Kiyoh Mobile health heartbeat.
+ * Daily Kiyoh Mobile health heartbeat and invitation retry task.
  *
  * Call the module link shown on the configuration page once a day:
  * /module/kiyoh/cron?token=...
@@ -15,6 +15,7 @@ if (!defined('_PS_VERSION_')) {
 }
 
 require_once _PS_MODULE_DIR_ . 'kiyoh/classes/KiyohMobileHealthReporter.php';
+require_once _PS_MODULE_DIR_ . 'kiyoh/classes/KiyohInvitationRetryRunner.php';
 
 /**
  * Token-protected cron endpoint. It does not render a storefront page.
@@ -67,11 +68,13 @@ class KiyohCronModuleFrontController extends ModuleFrontController
 
         try {
             $result = KiyohMobileHealthReporter::publishDueReports();
+            $inviteRetries = KiyohInvitationRetryRunner::retryDueFailedInvitations();
             echo json_encode([
                 'ok' => true,
                 'shops' => $result['shops'],
                 'posted' => $result['posted'],
                 'accepted' => $result['accepted'],
+                'invite_retries' => $inviteRetries,
             ]);
         } catch (Throwable $e) {
             http_response_code(500);

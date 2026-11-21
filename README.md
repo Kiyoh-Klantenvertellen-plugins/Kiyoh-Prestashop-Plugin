@@ -266,7 +266,7 @@ Enable PrestaShop debug mode to see detailed information about module operations
 
 ## About This Module
 
-**Version**: 1.4.0  
+**Version**: 1.4.4  
 **Compatibility**: PrestaShop 1.7.0.0–9.2.0  
 **PHP**: 8.2 or higher  
 **Developer**: Kiyoh  
@@ -325,6 +325,10 @@ https://your-shop.example/module/kiyoh/cron?token=YOUR_TOKEN
 ```
 
 Call that URL once a day. The token is created for this shop and is required. A wrong token gets `403` and does not report anything.
+
+The same URL also retries review invitations that failed with a temporary error (for example Kiyoh HTTP 503). Retries run at most three times with increasing delays. Permanent errors (for example HTTP 400) are not retried. Orders that already received an invite are never sent a second invite.
+
+When you upgrade from an older module version, PrestaShop runs the module upgrade step and adds the new invitation retry columns automatically. No manual SQL is required.
 
 In a multistore, one call reports every active shop, using that shop's own domain and saved credentials.
 

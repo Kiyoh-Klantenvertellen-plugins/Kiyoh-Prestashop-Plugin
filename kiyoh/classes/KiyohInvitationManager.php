@@ -15,6 +15,7 @@ require_once dirname(__FILE__) . '/KiyohApiClient.php';
 require_once dirname(__FILE__) . '/KiyohInvitationData.php';
 require_once dirname(__FILE__) . '/KiyohConfigManager.php';
 require_once dirname(__FILE__) . '/KiyohProductSyncManager.php';
+require_once dirname(__FILE__) . '/KiyohInvitationSupport.php';
 
 /**
  * Manages automated review invitations
@@ -101,7 +102,14 @@ class KiyohInvitationManager
         } catch (Throwable $e) {
             // Record failed invitation
             if (isset($invitationData)) {
-                $this->recordInvitation($order, $invitationData, 'failed', ['error' => $e->getMessage()]);
+                $httpStatus = $attemptedInviteApi ? $this->apiClient->getLastHttpStatus() : null;
+                $this->recordInvitationFailure(
+                    $order,
+                    $invitationData,
+                    $e->getMessage(),
+                    $httpStatus,
+                    false
+                );
             }
             
             $this->logError('sendInvitation', $e->getMessage(), $order->id);
@@ -247,15 +255,95 @@ class KiyohInvitationManager
      */
     private function isInvitationAlreadySent(Order $order): bool
     {
+        foreach ($this->getInvitationRowsForOrder((int) $order->id) as $row) {
+            $status = (string) ($row['status'] ?? '');
+            $failureClass = isset($row['failure_class']) ? (string) $row['failure_class'] : '';
+            $retryAttempts = (int) ($row['retry_attempts'] ?? 0);
+            if (KiyohInvitationSupport::blocksNewInviteForOrder($status, $failureClass, $retryAttempts)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether this order already has a sent invitation (used before retry).
+     */
+    public function hasSuccessfulInvitation(Order $order): bool
+    {
         $sql = new DbQuery();
         $sql->select('COUNT(*)');
         $sql->from('kiyoh_invitations');
-        $sql->where('id_order = ' . (int)$order->id);
+        $sql->where('id_order = ' . (int) $order->id);
         $sql->where('status IN ("sent", "pending")');
-        
-        $count = (int)Db::getInstance()->getValue($sql);
-        
-        return $count > 0;
+
+        return (int) Db::getInstance()->getValue($sql) > 0;
+    }
+
+    /**
+     * Retry one failed invitation row (cron task).
+     *
+     * @return array{sent: bool, message: string}
+     */
+    public function retryFailedInvitation(int $invitationId, Order $order): array
+    {
+        $row = $this->getInvitationRowById($invitationId);
+        if ($row === null) {
+            return ['sent' => false, 'message' => 'Invitation row not found'];
+        }
+
+        $status = (string) ($row['status'] ?? '');
+        $failureClass = (string) ($row['failure_class'] ?? '');
+        $retryAttempts = (int) ($row['retry_attempts'] ?? 0);
+        if (!KiyohInvitationSupport::isRetryEligible($status, $failureClass, $retryAttempts)) {
+            return ['sent' => false, 'message' => 'Invitation is not retryable'];
+        }
+
+        $nextAttempt = $retryAttempts + 1;
+        $this->updateInvitationRetryMeta($invitationId, $nextAttempt, null);
+
+        try {
+            $invitationData = $this->buildInvitationData($order);
+            $validationErrors = $invitationData->validate();
+            if (!empty($validationErrors)) {
+                throw new Exception('Invitation data validation failed: ' . implode(', ', $validationErrors));
+            }
+
+            if (!empty($invitationData->productCodes)) {
+                $this->syncProductsBeforeInvitation($order, $invitationData->productCodes);
+            }
+
+            $apiResponse = $this->apiClient->sendInvitation($invitationData->toApiArray());
+            $inviteHttpStatus = $this->apiClient->getLastHttpStatus();
+
+            $this->markInvitationSent($invitationId, $apiResponse);
+            $this->logSuccess('retryFailedInvitation', $order->id, $invitationData->email);
+            $this->reportInviteHealth($order, true, null, $inviteHttpStatus);
+
+            return ['sent' => true, 'message' => 'Invitation sent on retry'];
+        } catch (Throwable $e) {
+            $httpStatus = $this->apiClient->getLastHttpStatus();
+            $this->recordInvitationFailure(
+                $order,
+                $invitationData ?? KiyohInvitationData::fromOrder($order, $this->config),
+                $e->getMessage(),
+                $httpStatus,
+                true,
+                $invitationId,
+                $nextAttempt
+            );
+
+            $this->logError('retryFailedInvitation', $e->getMessage(), $order->id);
+            $this->reportInviteHealth(
+                $order,
+                false,
+                $e->getMessage(),
+                $httpStatus
+            );
+
+            return ['sent' => false, 'message' => $e->getMessage()];
+        }
     }
 
     /**
@@ -401,6 +489,9 @@ class KiyohInvitationManager
                 'sent_at' => $status === 'sent' ? date('Y-m-d H:i:s') : null,
                 'delay_days' => (int)$invitationData->delay,
                 'status' => pSQL($status),
+                'failure_class' => null,
+                'retry_attempts' => 0,
+                'next_retry_at' => null,
                 'response_data' => pSQL(json_encode($responseData)),
                 'date_add' => date('Y-m-d H:i:s')
             ];
@@ -413,6 +504,155 @@ class KiyohInvitationManager
             $this->logError('recordInvitation', $e->getMessage(), $order->id);
             return false;
         }
+    }
+
+    /**
+     * Record or update a failed invitation with retry metadata.
+     */
+    private function recordInvitationFailure(
+        Order $order,
+        KiyohInvitationData $invitationData,
+        string $errorMessage,
+        ?int $httpStatus,
+        bool $fromRetry,
+        ?int $invitationId = null,
+        ?int $retryAttempts = null
+    ): bool {
+        try {
+            $failureClass = KiyohInvitationSupport::classifyInviteFailure($errorMessage, $httpStatus);
+            $responseData = ['error' => $errorMessage];
+            if ($httpStatus !== null) {
+                $responseData['http_status'] = $httpStatus;
+            }
+
+            if ($invitationId === null) {
+                $invitationId = $this->findRetryableInvitationId((int) $order->id);
+            }
+
+            $attempts = $retryAttempts ?? 0;
+            if (!$fromRetry && $invitationId !== null) {
+                $existing = $this->getInvitationRowById($invitationId);
+                $attempts = (int) ($existing['retry_attempts'] ?? 0);
+            }
+
+            $status = 'failed';
+            $nextRetryAt = null;
+            if ($failureClass === 'temporary') {
+                if ($attempts >= KiyohInvitationSupport::MAX_RETRY_ATTEMPTS) {
+                    $status = 'failed_final';
+                    $failureClass = 'final';
+                } else {
+                    $backoff = KiyohInvitationSupport::retryBackoffSeconds($attempts);
+                    $nextRetryAt = date('Y-m-d H:i:s', time() + $backoff);
+                }
+            }
+
+            $payload = [
+                'customer_email' => pSQL($invitationData->email),
+                'invitation_type' => pSQL($invitationData->invitationType),
+                'delay_days' => (int) $invitationData->delay,
+                'status' => pSQL($status),
+                'failure_class' => pSQL($failureClass),
+                'retry_attempts' => (int) $attempts,
+                'next_retry_at' => $nextRetryAt !== null ? pSQL($nextRetryAt) : null,
+                'response_data' => pSQL(json_encode($responseData)),
+            ];
+
+            if ($invitationId !== null) {
+                return Db::getInstance()->update(
+                    'kiyoh_invitations',
+                    $payload,
+                    'id_invitation = ' . (int) $invitationId,
+                    0,
+                    true
+                );
+            }
+
+            $payload['id_order'] = (int) $order->id;
+            $payload['sent_at'] = null;
+            $payload['date_add'] = date('Y-m-d H:i:s');
+
+            return Db::getInstance()->insert('kiyoh_invitations', $payload, true);
+        } catch (Exception $e) {
+            $this->logError('recordInvitationFailure', $e->getMessage(), $order->id);
+
+            return false;
+        }
+    }
+
+    private function markInvitationSent(int $invitationId, array $apiResponse): bool
+    {
+        return Db::getInstance()->update(
+            'kiyoh_invitations',
+            [
+                'status' => pSQL('sent'),
+                'failure_class' => null,
+                'sent_at' => pSQL(date('Y-m-d H:i:s')),
+                'next_retry_at' => null,
+                'response_data' => pSQL(json_encode($apiResponse)),
+            ],
+            'id_invitation = ' . (int) $invitationId,
+            0,
+            true
+        );
+    }
+
+    private function updateInvitationRetryMeta(int $invitationId, int $retryAttempts, ?string $nextRetryAt): bool
+    {
+        return Db::getInstance()->update(
+            'kiyoh_invitations',
+            [
+                'retry_attempts' => (int) $retryAttempts,
+                'next_retry_at' => $nextRetryAt !== null ? pSQL($nextRetryAt) : null,
+            ],
+            'id_invitation = ' . (int) $invitationId,
+            0,
+            true
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function getInvitationRowsForOrder(int $orderId): array
+    {
+        $sql = new DbQuery();
+        $sql->select('*');
+        $sql->from('kiyoh_invitations');
+        $sql->where('id_order = ' . (int) $orderId);
+        $sql->orderBy('id_invitation DESC');
+        $rows = Db::getInstance()->executeS($sql);
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function getInvitationRowById(int $invitationId): ?array
+    {
+        $sql = new DbQuery();
+        $sql->select('*');
+        $sql->from('kiyoh_invitations');
+        $sql->where('id_invitation = ' . (int) $invitationId);
+        $row = Db::getInstance()->getRow($sql);
+
+        return is_array($row) ? $row : null;
+    }
+
+    private function findRetryableInvitationId(int $orderId): ?int
+    {
+        foreach ($this->getInvitationRowsForOrder($orderId) as $row) {
+            $status = (string) ($row['status'] ?? '');
+            $failureClass = (string) ($row['failure_class'] ?? '');
+            $retryAttempts = (int) ($row['retry_attempts'] ?? 0);
+            if ($status === 'failed' && $failureClass === 'temporary'
+                && KiyohInvitationSupport::isRetryEligible($status, $failureClass, $retryAttempts)) {
+                return (int) $row['id_invitation'];
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -478,7 +718,7 @@ class KiyohInvitationManager
             'Kiyoh Invitation %s successful - Order ID: %d, Email: %s',
             $method,
             $orderId,
-            $email
+            KiyohInvitationSupport::maskEmailForLog($email)
         );
         
         PrestaShopLogger::addLog(

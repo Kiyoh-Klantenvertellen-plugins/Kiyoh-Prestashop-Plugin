@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.4 — 2026-11-21
+
+### Fixed (KP-138)
+- Successful invite log lines no longer write the full customer email to PrestaShop logs. The address is masked (for example `j***@domain.com`) or only the order id is shown.
+- Temporary failed invites (HTTP 5xx, 408, 425, 429, or cURL timeouts) are retried automatically from the token-protected `/module/kiyoh/cron` URL and from the PrestaShop **cronjobs** module, up to three attempts with backoff. Permanent errors are not retried. Orders that already received an invite are not invited again.
+
+### Changed
+- `ps_kiyoh_invitations` gains `failure_class`, `retry_attempts`, and `next_retry_at` on upgrade. Fresh installs include these columns from `sql/install.sql`.
+- Module version is 1.4.4.
+
+**Note:** Rebase this release on top of pending 1.4.2 / 1.4.3 work after those pull requests merge.
+
 ## 1.4.1 — 2026-10-28
 
 ### Fixed
